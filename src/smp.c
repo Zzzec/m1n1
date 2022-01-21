@@ -147,21 +147,21 @@ void smp_start_secondaries(void)
         cpu_nodes[cpu_id] = node;
     }
 
-    for (int i = 1; i < MAX_CPUS; i++) {
-        int node = cpu_nodes[i];
+    // for (int i = 1; i < MAX_CPUS; i++) {
+    //     int node = cpu_nodes[i];
 
-        if (!node)
-            break;
+    //     if (!node)
+    //         break;
 
-        u32 reg;
-        u64 cpu_impl_reg[2];
-        if (ADT_GETPROP(adt, node, "reg", &reg) < 0)
-            continue;
-        if (ADT_GETPROP_ARRAY(adt, node, "cpu-impl-reg", cpu_impl_reg) < 0)
-            continue;
+    //     u32 reg;
+    //     u64 cpu_impl_reg[2];
+    //     if (ADT_GETPROP(adt, node, "reg", &reg) < 0)
+    //         continue;
+    //     if (ADT_GETPROP_ARRAY(adt, node, "cpu-impl-reg", cpu_impl_reg) < 0)
+    //         continue;
 
-        smp_start_cpu(i, reg >> 8, reg & 0xff, cpu_impl_reg[0], pmgr_reg + CPU_START_OFF);
-    }
+    //     smp_start_cpu(i, reg >> 8, reg & 0xff, cpu_impl_reg[0], pmgr_reg + CPU_START_OFF);
+    // }
 
     spin_table[0].mpidr = mrs(MPIDR_EL1) & 0xFFFFFF;
 }

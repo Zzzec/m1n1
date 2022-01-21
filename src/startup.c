@@ -88,12 +88,12 @@ void _start_c(void *boot_args, void *base)
     printf("CPU: %s\n\n", type);
 
     printf("boot_args at %p\n", boot_args);
-
+    printf("\n%lx",(unsigned long)boot_args);
     boot_args_addr = (u64)boot_args;
     memcpy(&cur_boot_args, boot_args, sizeof(cur_boot_args));
 
-    dump_boot_args(&cur_boot_args);
-    printf("\n");
+    // dump_boot_args(&cur_boot_args);
+    // printf("\n");
 
     adt =
         (void *)(((u64)cur_boot_args.devtree) - cur_boot_args.virt_base + cur_boot_args.phys_base);
@@ -106,11 +106,11 @@ void _start_c(void *boot_args, void *base)
 /* Secondary SMP core boot */
 void _cpu_reset_c(void *stack)
 {
-    printf("\n  Stack base: %p\n", stack);
-    printf("  MPIDR: 0x%lx\n", mrs(MPIDR_EL1));
-    const char *type = init_cpu();
-    printf("  CPU: %s\n", type);
+    // printf("\n  Stack base: %p\n", stack);
+    // printf("  MPIDR: 0x%lx\n", mrs(MPIDR_EL1));
+    // const char *type = init_cpu();
+    // printf("  CPU: %s\n", type);
 
-    exception_initialize();
-    smp_secondary_entry();
+    // exception_initialize();
+    // smp_secondary_entry();
 }

@@ -71,6 +71,7 @@ void run_actions(void)
 
 void m1n1_main(void)
 {
+    // unsigned long pacfunc,res;
     printf("\n\nm1n1 v%s\n", m1n1_version);
     printf("Copyright (C) 2021 The Asahi Linux Contributors\n");
     printf("Licensed under the MIT license\n\n");
@@ -89,7 +90,18 @@ void m1n1_main(void)
     aic_init();
     wdt_disable();
     pmgr_init();
-
+    // msr_sync(SYS_APL_APCTL_EL1,0x19);
+    // pacfunc = 0xffffff8008e80000;
+    // res = 0;
+    // asm volatile(
+    //     "mov x8,%[func]\n\t"
+    //     "pacizb x8\n\t"
+    //     "mov %[result],x8\n\t"
+    //     :[result]"=r"(res)
+    //     :[func]"r"(pacfunc)
+    //     :
+    //     );
+    // printf("\npac :%lx\n",res);
     printf("Initialization complete.\n");
 
     run_actions();
@@ -97,6 +109,8 @@ void m1n1_main(void)
     if (!next_stage.entry) {
         panic("Nothing to do!\n");
     }
+
+    
 
     printf("Preparing to run next stage at %p...\n", next_stage.entry);
 

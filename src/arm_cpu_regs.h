@@ -285,6 +285,7 @@
 #define TCR_A1         BIT(22)
 #define TCR_T1SZ       GENMASK(21, 16)
 #define TCR_T1SZ_48BIT 16UL
+#define TCR_T1SZ_39BIT 25UL
 #define TCR_TG0        GENMASK(15, 14)
 #define TCR_TG0_16K    0b10UL
 #define TCR_SH0        GENMASK(13, 12)

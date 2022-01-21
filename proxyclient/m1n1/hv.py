@@ -984,8 +984,11 @@ class HV(Reloadable):
         self.u.msr(AMX_CTL_EL1, amx_ctl.value)
 
         # Set guest AP keys
-        self.u.msr(APVMKEYLO_EL2, 0x4E7672476F6E6147)
-        self.u.msr(APVMKEYHI_EL2, 0x697665596F755570)
+        # self.u.msr(APVMKEYLO_EL2, 0x4E7672476F6E6147)
+        # self.u.msr(APVMKEYHI_EL2, 0x697665596F755570)
+        self.u.msr(APVMKEYLO_EL2, 0)
+        self.u.msr(APVMKEYHI_EL2, 0)
+
         self.u.msr(APSTS_EL12, 1)
 
         self.map_vuart()

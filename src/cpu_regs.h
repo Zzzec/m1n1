@@ -197,6 +197,7 @@
 #define SYS_IMP_APL_APVMKEYLO_EL2 sys_reg(3, 6, 15, 14, 4)
 #define SYS_IMP_APL_APVMKEYHI_EL2 sys_reg(3, 6, 15, 14, 5)
 #define SYS_IMP_APL_APSTS_EL12    sys_reg(3, 6, 15, 14, 7)
+#define SYS_APL_APCTL_EL1         sys_reg(3, 4, 15, 0, 4 )
 
 /* VM registers */
 #define SYS_IMP_APL_VM_TMR_FIQ_ENA_EL2 sys_reg(3, 5, 15, 1, 3)

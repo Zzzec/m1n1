@@ -7,10 +7,10 @@ from .proxyutils import GuardedHeap
 __all__ = ["dynamic_regs", "impdef_regs", "static_regs", "find_regs"]
 
 def _all():
-    for op1 in range(1 << 3):
-        for CRn in (0b1011, 0b1111):
+    for op1 in range(1 << 4):
+        for CRn in range(1<<4):
             for CRm in range(1 << 4):
-                for op2 in range(1 << 3):
+                for op2 in range(1 << 4):
                     yield 3, op1, CRn, CRm, op2
 
 dynamic_regs = [

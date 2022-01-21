@@ -576,6 +576,9 @@ class M1N1Proxy(Reloadable):
     P_FB_RESTORE_LOGO = 0xd07
     P_FB_IMPROVE_LOGO = 0xd08
 
+    P_PA = 0xe00
+    P_PB = 0xe01
+
     def __init__(self, iface, debug=False):
         self.debug = debug
         self.iface = iface
@@ -982,6 +985,13 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_FB_RESTORE_LOGO)
     def fb_improve_logo(self):
         return self.request(self.P_FB_IMPROVE_LOGO)
+
+    def pa(self):
+        return self.request(self.P_PA)
+        
+    def pb(self):
+        return self.request(self.P_PB)
+         
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__ == __name__)

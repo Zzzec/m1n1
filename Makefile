@@ -17,7 +17,7 @@ CFLAGS := -O2 -Wall -Wundef -Werror=strict-prototypes -fno-common -fno-PIE \
 	-Wsign-compare -Wunused-parameter -Wno-multichar \
 	-ffreestanding -fpic -ffunction-sections -fdata-sections \
 	-nostdinc -isystem $(shell $(CC) -print-file-name=include) -isystem sysinc \
-	-fno-stack-protector -mgeneral-regs-only -mstrict-align -march=armv8.2-a \
+	-fno-stack-protector -mgeneral-regs-only -mstrict-align -march=armv8.3-a \
 	-Wstack-usage=1024
 
 LDFLAGS := -T m1n1.ld -EL -maarch64elf --no-undefined -X -Bsymbolic \

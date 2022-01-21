@@ -28,6 +28,7 @@
 int proxy_process(ProxyRequest *request, ProxyReply *reply)
 {
     enum exc_guard_t guard_save = exc_guard;
+    unsigned long pacfunc=0xffffff8008e80000,res=0;
 
     reply->opcode = request->opcode;
     reply->status = S_OK;
@@ -476,7 +477,35 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_FB_IMPROVE_LOGO:
             fb_improve_logo();
             break;
-
+        case P_PA:
+            //add pac test
+            pacfunc = 0xffffff8008e80000;
+            res = 0;
+            asm volatile(
+                "mov x8,%[func]\n\t"
+                "paciza x8\n\t"
+                "mov %[result],x8\n\t"
+                :[result]"=r"(res)
+                :[func]"r"(pacfunc)
+                :
+            );
+            reply->retval = res;
+            break;
+        case P_PB:
+            //add pac test
+            pacfunc = 0xffffff8008e80000;
+            res = 0;
+            asm volatile(
+                "mov x8,%[func]\n\t"
+                "pacizb x8\n\t"
+                "mov %[result],x8\n\t"
+                :[result]"=r"(res)
+                :[func]"r"(pacfunc)
+                :
+            );
+            reply->retval = res;
+            break;
+        
         default:
             reply->status = S_BADCMD;
             break;
