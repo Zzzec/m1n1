@@ -11,6 +11,7 @@
 #include "kboot.h"
 #include "malloc.h"
 #include "memory.h"
+#include "nvme.h"
 #include "pcie.h"
 #include "pmgr.h"
 #include "smp.h"
@@ -360,17 +361,17 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             reply->retval = kboot_prepare_dt((void *)request->args[0]);
             break;
 
-        case P_PMGR_CLOCK_ENABLE:
-            reply->retval = pmgr_clock_enable(request->args[0]);
+        case P_PMGR_POWER_ENABLE:
+            reply->retval = pmgr_power_enable(request->args[0]);
             break;
-        case P_PMGR_CLOCK_DISABLE:
-            reply->retval = pmgr_clock_enable(request->args[0]);
+        case P_PMGR_POWER_DISABLE:
+            reply->retval = pmgr_power_enable(request->args[0]);
             break;
-        case P_PMGR_ADT_CLOCKS_ENABLE:
-            reply->retval = pmgr_adt_clocks_enable((const char *)request->args[0]);
+        case P_PMGR_ADT_POWER_ENABLE:
+            reply->retval = pmgr_adt_power_enable((const char *)request->args[0]);
             break;
-        case P_PMGR_ADT_CLOCKS_DISABLE:
-            reply->retval = pmgr_adt_clocks_disable((const char *)request->args[0]);
+        case P_PMGR_ADT_POWER_DISABLE:
+            reply->retval = pmgr_adt_power_disable((const char *)request->args[0]);
             break;
 
         case P_IODEV_SET_USAGE:
@@ -412,7 +413,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_DART_INIT:
-            reply->retval = (u64)dart_init(request->args[0], request->args[1]);
+            reply->retval = (u64)dart_init(request->args[0], request->args[1], request->args[2]);
             break;
         case P_DART_SHUTDOWN:
             dart_shutdown((dart_dev_t *)request->args[0]);
@@ -493,6 +494,14 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_PCIE_SHUTDOWN:
             pcie_shutdown();
+            break;
+
+        case P_NVME_INIT:
+            if (!nvme_init())
+                reply->retval = -1;
+            break;
+        case P_NVME_SHUTDOWN:
+            nvme_shutdown();
             break;
 
         default:

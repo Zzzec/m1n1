@@ -5,6 +5,7 @@
 #include "adt.h"
 #include "aic.h"
 #include "cpufreq.h"
+#include "display.h"
 #include "exception.h"
 #include "fb.h"
 #include "gxf.h"
@@ -76,7 +77,7 @@ void run_actions(void)
 void m1n1_main(void)
 {
     printf("\n\nm1n1 v%s\n", m1n1_version);
-    printf("Copyright (C) 2021 The Asahi Linux Contributors\n");
+    printf("Copyright The Asahi Linux Contributors\n");
     printf("Licensed under the MIT license\n\n");
 
     printf("Running in EL%lu\n\n", mrs(CurrentEL) >> 2);
@@ -89,6 +90,7 @@ void m1n1_main(void)
     mmu_init();
 
 #ifdef USE_FB
+    display_init();
     fb_init();
     fb_display_logo();
 #endif

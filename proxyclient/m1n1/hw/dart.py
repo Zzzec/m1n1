@@ -323,6 +323,8 @@ class DART(Reloadable):
     def invalidate_streams(self, streams=0xffffffff):
         self.regs.STREAM_SELECT.val = streams
         self.regs.STREAM_COMMAND.val = R_STREAM_COMMAND(INVALIDATE=1)
+        while self.regs.STREAM_COMMAND.reg.BUSY:
+            pass
 
     def invalidate_cache(self):
         self.pt_cache = {}
@@ -344,7 +346,6 @@ class DART(Reloadable):
             print("    page (%d): %08x ... %08x -> %016x [%d%d]" % (
                 i, base + i*0x4000, base + (i+1)*0x4000,
                 pte.OFFSET << self.PAGE_BITS, pte.SP_PROT_DIS, pte.VALID))
-            print(hex(pte.value))
 
     def dump_table(self, base, l1_addr):
         cached, tbl = self.get_pt(l1_addr)

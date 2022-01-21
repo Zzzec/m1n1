@@ -28,6 +28,8 @@
 #define min(a, b) (((a) < (b)) ? (a) : (b))
 #define max(a, b) (((a) > (b)) ? (a) : (b))
 
+#define USEC_PER_SEC 1000000L
+
 static inline u64 read64(u64 addr)
 {
     u64 data;
@@ -417,5 +419,7 @@ extern u32 board_id, chip_id;
 extern struct vector_args next_stage;
 
 void deep_wfi(void);
+
+bool is_heap(void *addr);
 
 #endif

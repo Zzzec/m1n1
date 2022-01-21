@@ -53,11 +53,16 @@ LIBFDT_OBJECTS := $(patsubst %,libfdt/%, \
 
 OBJECTS := \
 	adt.o \
+	afk.o \
 	aic.o \
+	asc.o \
 	bootlogo_128.o bootlogo_256.o \
 	chickens.o \
 	cpufreq.o \
 	dart.o \
+	dcp.o \
+	dcp_iboot.o \
+	display.o \
 	exception.o exception_asm.o \
 	fb.o font.o font_retina.o \
 	gxf.o gxf_asm.o \
@@ -65,15 +70,19 @@ OBJECTS := \
 	hv.o hv_vm.o hv_exc.o hv_vuart.o hv_wdt.o hv_asm.o hv_aic.o \
 	i2c.o \
 	iodev.o \
+	iova.o \
 	kboot.o \
 	main.o \
 	mcc.o \
 	memory.o memory_asm.o \
+	nvme.o \
 	payload.o \
 	pcie.o \
 	pmgr.o \
 	proxy.o \
 	ringbuffer.o \
+	rtkit.o \
+	sart.o \
 	smp.o \
 	start.o \
 	startup.o \
