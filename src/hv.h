@@ -97,4 +97,8 @@ void hv_rearm(void);
 void hv_check_rendezvous(struct exc_info *ctx);
 void hv_tick(struct exc_info *ctx);
 
+//Zec's test
+void hv_stub(struct exc_info *ctx);
+void my_guest(void);
+
 #endif

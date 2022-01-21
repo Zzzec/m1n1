@@ -116,7 +116,7 @@ void hv_start(void *entry, u64 regs[4])
     hv_arm_tick();
     hv_want_cpu = -1;
     hv_cpus_in_guest = 1;
-
+    printf("bbbbbbbbbbefore enter\n");
     hv_enter_guest(regs[0], regs[1], regs[2], regs[3], entry);
 
     __atomic_sub_fetch(&hv_cpus_in_guest, 1, __ATOMIC_ACQUIRE);
@@ -333,4 +333,40 @@ void hv_tick(struct exc_info *ctx)
         hv_exc_proxy(ctx, START_HV, HV_USER_INTERRUPT, NULL);
     }
     hv_vuart_poll();
+}
+
+
+void hv_stub(struct exc_info *ctx)
+{
+    printf("sssssssssssssssssssssssssssssstub\n");
+    // sysop("bl my_guest");
+    // asm volatile(
+    //     "ldr x7, =my_guest\n\t"
+    //     "msr elr_el2, x7\n\t"
+    //     "mrs x5,daif\n\t"
+    //     "msr daifclr, 3\n\t"
+    //     "mov x6, #5\n\t"
+    //     "orr x5, x5, x6\n\t"
+    //     "msr spsr_el2,x5\n\t"
+    //     "mov x5,#0\n\t"
+    //     "msr sp_el0,x5\n\t"
+    //     "msr sp_el1,x5\n\t"
+    //     "eret\n\t"
+    //     // "blr x6\n\t"
+    //     :
+    //     :
+    //     :);
+    u64 regs[4]={1,2,3,4};
+    hv_start(my_guest,regs);
+}
+
+void my_guest(void)
+{
+    while(1)
+    {
+        printf("ffff\n");
+    }
+    asm volatile("mov x2,0xffffffffffffff");
+    printf("gggggggggggggggggguest\n");
+    sysop("hvc 0x21");
 }

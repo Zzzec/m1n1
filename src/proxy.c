@@ -495,6 +495,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             pcie_shutdown();
             break;
 
+        case P_BARE:
+            hv_stub(0);
+            break;
         default:
             reply->status = S_BADCMD;
             break;

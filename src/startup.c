@@ -96,7 +96,7 @@ void _start_c(void *boot_args, void *base)
 
     printf("boot_args at %p\n", boot_args);
 
-    dump_boot_args(&cur_boot_args);
+    // dump_boot_args(&cur_boot_args);
     printf("\n");
 
     exception_initialize();

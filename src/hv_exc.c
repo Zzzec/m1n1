@@ -30,6 +30,7 @@ D_PERCPU(static u64, pmc_irq_mode);
 D_PERCPU(static u64, exc_entry_pmcr0_cnt);
 
 void hv_exit_guest(void) __attribute__((noreturn));
+void hv_enter_guest(u64 x0, u64 x1, u64 x2, u64 x3, void *entry);
 
 static u64 stolen_time = 0;
 static u64 exc_entry_time;
@@ -313,12 +314,16 @@ static void hv_exc_exit(struct exc_info *ctx)
     msr(SP_EL1, ctx->sp[1]);
 }
 
+u64 count = 0;
+u64 origin_elr = 0;
+u64 origin_elr_phys = 0;
 void hv_exc_sync(struct exc_info *ctx)
 {
     hv_wdt_breadcrumb('S');
     hv_exc_entry(ctx);
     bool handled = false;
     u32 ec = FIELD_GET(ESR_EC, ctx->esr);
+    u32 iss = FIELD_GET(ESR_ISS,ctx->esr);
 
     switch (ec) {
         case ESR_EC_DABORT_LOWER:
@@ -335,6 +340,37 @@ void hv_exc_sync(struct exc_info *ctx)
                 case ESR_ISS_IMPDEF_MSR:
                     handled = hv_handle_msr(ctx, ctx->afsr1);
                     break;
+            }
+            break;
+        case ESR_EC_HVC:
+            switch (iss)
+            {
+            case 0x20:
+                // printf("xxxxxxxxxxxxxxxxxxxxxxxxxxxx\n");
+                // count++;
+                // if(count==2)
+                //     printf("zzzzzzzzzzzzzzzzzzzzzzzzzz\n");
+                count++;
+                if(count%100000==0)
+                    printf("hhhhhh   %ld\n",count);
+                if(count==2000000)
+                {
+                    // hv_exc_proxy(ctx, START_EXCEPTION_LOWER, EXC_SYNC, NULL);
+                    
+                }
+                u64 x1 = ctx->regs[1];
+                u64 x2 = x1 | 2;
+                ctx->regs[2] = x2;
+                handled = true;
+                break;
+            case 0x21:
+                while(1)
+                {
+                    printf("hhhhhhhhhhhhhhhhhhhhhhhhh\n");
+                }
+                break;
+            default:
+                break;
             }
             break;
     }
@@ -354,6 +390,7 @@ void hv_exc_sync(struct exc_info *ctx)
     hv_exc_exit(ctx);
     hv_wdt_breadcrumb('s');
 }
+
 
 void hv_exc_irq(struct exc_info *ctx)
 {

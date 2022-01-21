@@ -106,7 +106,7 @@ _hv_return:
 .globl _v_hv_sync
 .type _v_hv_sync, @function
 _v_hv_sync:
-    msr pan, #0
+    msr pan, #0             //PAN set to 0?
     sub sp, sp, #(SIZEOF_EXC_INFO - 32 * 8)
     str x30, [sp, #-16]!
     bl _hv_entry
@@ -148,6 +148,21 @@ _v_hv_serr:
     b _hv_return
 
 .extern hv_saved_sp
+/* 
+.extern my_guest
+.global hv_enter_guest
+.type hv_enter_guest @function
+hv_enter_guest:
+    ldr x6,=my_guest
+    msr elr_el2,x6
+    mrs x5,spsr_el2
+    mov x6,#5
+    orr x5,x5,x6
+    msr spsr_el2,x5
+    
+
+    eret
+*/
 
 .globl hv_enter_guest
 .type hv_enter_guest, @function
@@ -177,6 +192,7 @@ hv_enter_guest:
     msr sp_el1, x5
 
     eret
+
 
 .globl hv_exit_guest
 .type hv_exit_guest, @function

@@ -586,6 +586,8 @@ class M1N1Proxy(Reloadable):
     P_PCIE_INIT = 0xe00
     P_PCIE_SHUTDOWN = 0xe01
 
+    P_BARE = 0xf00
+
     def __init__(self, iface, debug=False):
         self.debug = debug
         self.iface = iface
@@ -1003,6 +1005,9 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_PCIE_INIT)
     def pcie_shutdown(self):
         return self.request(self.P_PCIE_SHUTDOWN)
+
+    def bare_el1(self):
+        return self.request(self.P_BARE)
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__ == __name__)

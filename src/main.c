@@ -73,6 +73,15 @@ void run_actions(void)
     uartproxy_run(NULL);
 }
 
+void hehe(void)
+{
+    while(1)
+    {
+        printf("xxxxxxxxxxxxxxxxxxxx\n");
+    }
+
+}
+
 void m1n1_main(void)
 {
     printf("\n\nm1n1 v%s\n", m1n1_version);
@@ -80,19 +89,43 @@ void m1n1_main(void)
     printf("Licensed under the MIT license\n\n");
 
     printf("Running in EL%lu\n\n", mrs(CurrentEL) >> 2);
+    printf("hahahahahahahahahahahhahahhhhhhhh\n");     
 
     get_device_info();
-
+    // long unsigned apctl = mrs(SYS_IMP_APL_APCTL_EL1);
+    // printf("hahahha %lx\n",apctl);
+    // msr(SYS_IMP_APL_APCTL_EL1,0x19);
+    // asm volatile("isb":::);
+    // apctl = mrs(SYS_IMP_APL_APCTL_EL1);
+    // printf("hahahha %lx\n",apctl);
     heapblock_init();
     gxf_init();
+    long unsigned gentt = 0;
+    
     mcc_init();
     mmu_init();
 
+
+    msr(SYS_IMP_APL_SPRR_CONFIG_EL1,0x1);
+    sysop("isb");
+    msr(SYS_IMP_APL_GXF_CONFIG_EL1,0x1);
+    sysop("isb");
+    // msr(SYS_IMP_APL_GXF_ENTER_EL1,0xfffff);
+    gentt = mrs(SYS_IMP_APL_GXF_ENTER_EL1);
+    printf("gggggenttttttt :%lx\n",gentt);
+    sysop("isb");
+    msr(SYS_IMP_APL_GXF_CONFIG_EL1,0x0);
+    sysop("isb");
+    msr(SYS_IMP_APL_SPRR_CONFIG_EL1,0x0);
+    sysop("isb");
+
 #ifdef USE_FB
     fb_init();
+    
     fb_display_logo();
 #endif
-
+    
+    
     aic_init();
     wdt_disable();
     pmgr_init();
