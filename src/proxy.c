@@ -10,6 +10,7 @@
 #include "iodev.h"
 #include "kboot.h"
 #include "malloc.h"
+#include "mcc.h"
 #include "memory.h"
 #include "nvme.h"
 #include "pcie.h"
@@ -502,6 +503,16 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
         case P_NVME_SHUTDOWN:
             nvme_shutdown();
+            break;
+        case P_NVME_READ:
+            nvme_read(request->args[0], request->args[1], (void *)request->args[2]);
+            break;
+        case P_NVME_FLUSH:
+            nvme_flush(request->args[0]);
+            break;
+
+        case P_MCC_HV_UNMAP_CARVEOUTS:
+            reply->retval = mcc_hv_unmap_carveouts();
             break;
 
         default:

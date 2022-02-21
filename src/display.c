@@ -4,6 +4,7 @@
 #include "assert.h"
 #include "dcp.h"
 #include "dcp_iboot.h"
+#include "string.h"
 #include "utils.h"
 #include "xnuboot.h"
 
@@ -18,7 +19,7 @@
         continue;                                                                                  \
     }
 
-void display_choose_timing_mode(dcp_timing_mode_t *modes, int cnt, dcp_timing_mode_t *best)
+static void display_choose_timing_mode(dcp_timing_mode_t *modes, int cnt, dcp_timing_mode_t *best)
 {
     *best = modes[0];
 
@@ -35,7 +36,7 @@ void display_choose_timing_mode(dcp_timing_mode_t *modes, int cnt, dcp_timing_mo
            best->height, best->fps >> 16, (best->fps & 0xffff) * 99 / 0xffff);
 }
 
-void display_choose_color_mode(dcp_color_mode_t *modes, int cnt, dcp_color_mode_t *best)
+static void display_choose_color_mode(dcp_color_mode_t *modes, int cnt, dcp_color_mode_t *best)
 {
     *best = modes[0];
 
@@ -52,7 +53,7 @@ void display_choose_color_mode(dcp_color_mode_t *modes, int cnt, dcp_color_mode_
            best->colorimetry, best->eotf, best->encoding, best->bpp);
 }
 
-int display_configure(void)
+static int display_configure(void)
 {
     int ret = -1;
 
@@ -171,6 +172,9 @@ int display_configure(void)
     cur_boot_args.video.width = layer.width;
     cur_boot_args.video.height = layer.height;
     cur_boot_args.video.depth = 30;
+
+    /* Update for python / subsequent stages */
+    memcpy((void *)boot_args_addr, &cur_boot_args, sizeof(cur_boot_args));
 
 bail:
     ret = 0;

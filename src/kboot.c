@@ -36,6 +36,42 @@ static size_t initrd_size = 0;
         goto err;                                                                                  \
     } while (0)
 
+void get_notchless_fb(u64 *fb_base, u64 *fb_height)
+{
+    *fb_base = cur_boot_args.video.base;
+    *fb_height = cur_boot_args.video.height;
+
+    int node = adt_path_offset(adt, "/product");
+
+    if (node < 0) {
+        printf("FDT: /product node not found\n");
+        return;
+    }
+
+    u32 val;
+
+    if (ADT_GETPROP(adt, node, "partially-occluded-display", &val) < 0 || !val) {
+        printf("FDT: No notch detected\n");
+        return;
+    }
+
+    u64 hfrac = cur_boot_args.video.height * 16 / cur_boot_args.video.width;
+    u64 new_height = cur_boot_args.video.width * hfrac / 16;
+
+    if (new_height == cur_boot_args.video.height) {
+        printf("FDT: Notch detected, but display aspect is already 16:%lu?\n", hfrac);
+        return;
+    }
+
+    u64 offset = cur_boot_args.video.height - new_height;
+
+    printf("display: Hiding notch, %lux%lu -> %lux%lu (+%lu, 16:%lu)\n", cur_boot_args.video.width,
+           cur_boot_args.video.height, cur_boot_args.video.width, new_height, offset, hfrac);
+
+    *fb_base += cur_boot_args.video.stride * offset;
+    *fb_height = new_height;
+}
+
 static int dt_set_chosen(void)
 {
 
@@ -69,8 +105,9 @@ static int dt_set_chosen(void)
         if (fb < 0)
             bail("FDT: /chosen node not found in devtree\n");
 
-        u64 fb_base = cur_boot_args.video.base;
-        u64 fb_size = cur_boot_args.video.stride * cur_boot_args.video.height;
+        u64 fb_base, fb_height;
+        get_notchless_fb(&fb_base, &fb_height);
+        u64 fb_size = cur_boot_args.video.stride * fb_height;
         u64 fbreg[2] = {cpu_to_fdt64(fb_base), cpu_to_fdt64(fb_size)};
         char fbname[32];
 
@@ -85,7 +122,7 @@ static int dt_set_chosen(void)
         if (fdt_setprop_u32(dt, fb, "width", cur_boot_args.video.width))
             bail("FDT: couldn't set framebuffer width\n");
 
-        if (fdt_setprop_u32(dt, fb, "height", cur_boot_args.video.height))
+        if (fdt_setprop_u32(dt, fb, "height", fb_height))
             bail("FDT: couldn't set framebuffer height\n");
 
         if (fdt_setprop_u32(dt, fb, "stride", cur_boot_args.video.stride))
@@ -327,6 +364,64 @@ static int dt_set_wifi(void)
     return 0;
 }
 
+static void dt_set_uboot_dm_preloc(int node)
+{
+    // Tell U-Boot to bind this node early
+    fdt_setprop_empty(dt, node, "u-boot,dm-pre-reloc");
+
+    // Make sure the power domains are bound early as well
+    int pds_size;
+    const fdt32_t *pds = fdt_getprop(dt, node, "power-domains", &pds_size);
+    if (!pds)
+        return;
+
+    fdt32_t *phandles = malloc(pds_size);
+    if (!phandles) {
+        printf("FDT: out of memory\n");
+        return;
+    }
+    memcpy(phandles, pds, pds_size);
+
+    for (int i = 0; i < pds_size / 4; i++) {
+        node = fdt_node_offset_by_phandle(dt, fdt32_ld(&phandles[i]));
+        if (node < 0)
+            continue;
+        dt_set_uboot_dm_preloc(node);
+
+        // restore node offset after DT update
+        node = fdt_node_offset_by_phandle(dt, fdt32_ld(&phandles[i]));
+        if (node < 0)
+            continue;
+
+        // And make sure the PMGR node is bound early too
+        node = fdt_parent_offset(dt, node);
+        if (node < 0)
+            continue;
+        dt_set_uboot_dm_preloc(node);
+    }
+
+    free(phandles);
+}
+
+static int dt_set_uboot(void)
+{
+    // Make sure that U-Boot can initialize the serial port in its
+    // pre-relocation phase by marking its node and the nodes of the
+    // power domains it depends on with a "u-boot,dm-pre-reloc"
+    // property.
+
+    const char *path = fdt_get_alias(dt, "serial0");
+    if (path == NULL)
+        return 0;
+
+    int node = fdt_path_offset(dt, path);
+    if (node < 0)
+        return 0;
+
+    dt_set_uboot_dm_preloc(node);
+    return 0;
+}
+
 static int dt_disable_missing_devs(const char *adt_prefix, const char *dt_prefix, int max_devs)
 {
     int ret = -1;
@@ -486,6 +581,8 @@ int kboot_prepare_dt(void *fdt)
     if (dt_set_mac_addresses())
         return -1;
     if (dt_set_wifi())
+        return -1;
+    if (dt_set_uboot())
         return -1;
     if (dt_disable_missing_devs("usb-drd", "usb@", 8))
         return -1;
