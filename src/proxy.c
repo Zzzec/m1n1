@@ -334,6 +334,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_SMP_WAIT:
             reply->retval = smp_wait(request->args[0]);
             break;
+        case P_SMP_SET_WFE_MODE:
+            smp_set_wfe_mode(request->args[0]);
+            break;
 
         case P_HEAPBLOCK_ALLOC:
             reply->retval = (u64)heapblock_alloc(request->args[0]);
@@ -498,17 +501,16 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_NVME_INIT:
-            if (!nvme_init())
-                reply->retval = -1;
+            reply->retval = nvme_init();
             break;
         case P_NVME_SHUTDOWN:
             nvme_shutdown();
             break;
         case P_NVME_READ:
-            nvme_read(request->args[0], request->args[1], (void *)request->args[2]);
+            reply->retval = nvme_read(request->args[0], request->args[1], (void *)request->args[2]);
             break;
         case P_NVME_FLUSH:
-            nvme_flush(request->args[0]);
+            reply->retval = nvme_flush(request->args[0]);
             break;
 
         case P_MCC_HV_UNMAP_CARVEOUTS:
