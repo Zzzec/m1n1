@@ -44,8 +44,8 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             return 1;
         case P_CALL: {
             generic_func *f = (generic_func *)request->args[0];
-            reply->retval =
-                f(request->args[1], request->args[2], request->args[3], request->args[4]);
+            reply->retval = f(request->args[1], request->args[2], request->args[3],
+                              request->args[4], request->args[5]);
             break;
         }
         case P_GET_BOOTARGS:
@@ -90,7 +90,7 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             usb_hpm_restore_irqs(1);
             iodev_console_flush();
             next_stage.entry = (generic_func *)request->args[0];
-            memcpy(next_stage.args, &request->args[1], 4 * sizeof(u64));
+            memcpy(next_stage.args, &request->args[1], 5 * sizeof(u64));
             next_stage.restore_logo = true;
             return 1;
         case P_GL1_CALL:
@@ -355,8 +355,8 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             if (kboot_boot((void *)request->args[0]) == 0)
                 return 1;
             break;
-        case P_KBOOT_SET_BOOTARGS:
-            kboot_set_bootargs((void *)request->args[0]);
+        case P_KBOOT_SET_CHOSEN:
+            reply->retval = kboot_set_chosen((void *)request->args[0], (void *)request->args[1]);
             break;
         case P_KBOOT_SET_INITRD:
             kboot_set_initrd((void *)request->args[0], request->args[1]);

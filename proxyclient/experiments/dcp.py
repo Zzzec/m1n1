@@ -15,55 +15,57 @@ from m1n1.fw.dcp.manager import DCPManager
 from m1n1.fw.dcp.ipc import ByRef
 from m1n1.proxyutils import RegMonitor
 
+is_t8103 = u.adt["arm-io"].compatible[0] == "arm-io,t8103"
 mon = RegMonitor(u)
 
-#mon.add(0x230000000, 0x18000)
-#mon.add(0x230018000, 0x4000)
-#mon.add(0x230068000, 0x8000)
-#mon.add(0x2300b0000, 0x8000)
-#mon.add(0x2300f0000, 0x4000)
-#mon.add(0x230100000, 0x10000)
-#mon.add(0x230170000, 0x10000)
-#mon.add(0x230180000, 0x1c000)
-#mon.add(0x2301a0000, 0x10000)
-#mon.add(0x2301d0000, 0x4000)
-#mon.add(0x230230000, 0x10000)
-#mon.add(0x23038c000, 0x10000)
-#mon.add(0x230800000, 0x10000)
-#mon.add(0x230840000, 0xc000)
-#mon.add(0x230850000, 0x2000)
-##mon.add(0x230852000, 0x5000) # big curve / gamma table
-#mon.add(0x230858000, 0x18000)
-#mon.add(0x230870000, 0x4000)
-#mon.add(0x230880000, 0x8000)
-#mon.add(0x230894000, 0x4000)
-#mon.add(0x2308a8000, 0x8000)
-#mon.add(0x2308b0000, 0x8000)
-#mon.add(0x2308f0000, 0x4000)
-##mon.add(0x2308fc000, 0x4000) # stats / RGB color histogram
-#mon.add(0x230900000, 0x10000)
-#mon.add(0x230970000, 0x10000)
-#mon.add(0x230980000, 0x10000)
-#mon.add(0x2309a0000, 0x10000)
-#mon.add(0x2309d0000, 0x4000)
-#mon.add(0x230a30000, 0x20000)
-#mon.add(0x230b8c000, 0x10000)
-#mon.add(0x231100000, 0x8000)
-#mon.add(0x231180000, 0x4000)
-#mon.add(0x2311bc000, 0x10000)
-#mon.add(0x231300000, 0x8000)
-##mon.add(0x23130c000, 0x4000) # - DCP dart
-#mon.add(0x231310000, 0x8000)
-#mon.add(0x231340000, 0x8000)
-##mon.add(0x231800000, 0x8000) # breaks DCP
-##mon.add(0x231840000, 0x8000) # breaks DCP
-##mon.add(0x231850000, 0x8000) # something DCP?
-##mon.add(0x231920000, 0x8000) # breaks DCP
-##mon.add(0x231960000, 0x8000) # breaks DCP
-##mon.add(0x231970000, 0x10000) # breaks DCP
-##mon.add(0x231c00000, 0x10000) # DCP mailbox
+if is_t8103:
+    #mon.add(0x230000000, 0x18000)
+    #mon.add(0x230018000, 0x4000)
+    #mon.add(0x230068000, 0x8000)
+    #mon.add(0x2300b0000, 0x8000)
+    #mon.add(0x2300f0000, 0x4000)
+    #mon.add(0x230100000, 0x10000)
+    #mon.add(0x230170000, 0x10000)
+    #mon.add(0x230180000, 0x1c000)
+    #mon.add(0x2301a0000, 0x10000)
+    #mon.add(0x2301d0000, 0x4000)
+    #mon.add(0x230230000, 0x10000)
+    #mon.add(0x23038c000, 0x10000)
+    #mon.add(0x230800000, 0x10000)
+    #mon.add(0x230840000, 0xc000)
+    #mon.add(0x230850000, 0x2000)
+    ##mon.add(0x230852000, 0x5000) # big curve / gamma table
+    #mon.add(0x230858000, 0x18000)
+    #mon.add(0x230870000, 0x4000)
+    #mon.add(0x230880000, 0x8000)
+    #mon.add(0x230894000, 0x4000)
+    #mon.add(0x2308a8000, 0x8000)
+    #mon.add(0x2308b0000, 0x8000)
+    #mon.add(0x2308f0000, 0x4000)
+    ##mon.add(0x2308fc000, 0x4000) # stats / RGB color histogram
+    #mon.add(0x230900000, 0x10000)
+    #mon.add(0x230970000, 0x10000)
+    #mon.add(0x230980000, 0x10000)
+    #mon.add(0x2309a0000, 0x10000)
+    #mon.add(0x2309d0000, 0x4000)
+    #mon.add(0x230a30000, 0x20000)
+    #mon.add(0x230b8c000, 0x10000)
+    #mon.add(0x231100000, 0x8000)
+    #mon.add(0x231180000, 0x4000)
+    #mon.add(0x2311bc000, 0x10000)
+    #mon.add(0x231300000, 0x8000)
+    ##mon.add(0x23130c000, 0x4000) # - DCP dart
+    #mon.add(0x231310000, 0x8000)
+    #mon.add(0x231340000, 0x8000)
+    ##mon.add(0x231800000, 0x8000) # breaks DCP
+    ##mon.add(0x231840000, 0x8000) # breaks DCP
+    ##mon.add(0x231850000, 0x8000) # something DCP?
+    ##mon.add(0x231920000, 0x8000) # breaks DCP
+    ##mon.add(0x231960000, 0x8000) # breaks DCP
+    ##mon.add(0x231970000, 0x10000) # breaks DCP
+    ##mon.add(0x231c00000, 0x10000) # DCP mailbox
 
-mon.add(0x230845840, 0x40) # error regs
+    mon.add(0x230845840, 0x40) # error regs
 
 mon.poll()
 
@@ -77,6 +79,7 @@ disp_dart.regs.dump_regs()
 
 dcp_addr = u.adt["arm-io/dcp"].get_reg(0)[0]
 dcp = DCPClient(u, dcp_addr, dart, disp_dart)
+dcp.dva_offset = getattr(u.adt["/arm-io/dcp"][0], "asc_dram_mask", 0)
 
 dcp.start()
 dcp.start_ep(0x37)
@@ -101,11 +104,17 @@ assert mgr.setPowerState(1, False, ByRef(0)) == 0
 
 mon.poll()
 
-assert mgr.set_display_device(2) == 0
+if is_t8103:
+    assert mgr.set_display_device(2) == 0
+else:
+    assert mgr.set_display_device(0) == 2
 assert mgr.set_parameter_dcp(14, [0], 1) == 0
 #mgr.set_digital_out_mode(86, 38)
 
-assert mgr.set_display_device(2) == 0
+if is_t8103:
+    assert mgr.set_display_device(2) == 0
+else:
+    assert mgr.set_display_device(0) == 2
 assert mgr.set_parameter_dcp(14, [0], 1) == 0
 #mgr.set_digital_out_mode(89, 38)
 
@@ -114,7 +123,10 @@ assert mgr.get_gamma_table(t) == 2
 assert mgr.set_contrast(0) == 0
 assert mgr.setBrightnessCorrection(65536) == 0
 
-assert mgr.set_display_device(2) == 0
+if is_t8103:
+    assert mgr.set_display_device(2) == 0
+else:
+    assert mgr.set_display_device(0) == 2
 assert mgr.set_parameter_dcp(14, [0], 1) == 0
 #mgr.set_digital_out_mode(89, 72)
 
@@ -142,6 +154,9 @@ mgr.setBrightnessCorrection(65536)
 mgr.set_parameter_dcp(3, [65536], 1)
 mgr.set_parameter_dcp(6, [65536], 1)
 
+width = mgr.display_width()
+height = mgr.display_height()
+
 surface_id = 3
 
 swap_rec = Container(
@@ -149,10 +164,10 @@ swap_rec = Container(
     flags2 = 0x04,
     swap_id = swapid.val,
     surf_ids = [surface_id, 0, 0, 0],
-    src_rect = [[0, 0, 1920, 1080],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+    src_rect = [[0, 0, width, height],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
     surf_flags = [1, 0, 0, 0],
     surf_unk = [0, 0, 0, 0],
-    dst_rect = [[0, 0, 1920, 1080],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
+    dst_rect = [[0, 0, width, height],[0,0,0,0],[0,0,0,0],[0,0,0,0]],
     swap_enabled = 0x80000007,
     swap_completed = 0x80000007,
 )
@@ -166,14 +181,14 @@ surf = Container(
     format = "BGRA",
     xfer_func = 13,
     colorspace = 1,
-    stride = 1920 * 4,
+    stride = width * 4,
     pix_size = 4,
     pel_w = 1,
     pel_h = 1,
     offset = 0,
-    width = 1920,
-    height = 1080,
-    buf_size = 1920 * 1080 * 4,
+    width = width,
+    height = height,
+    buf_size = width * height * 4,
     surface_id = surface_id,
     has_comp = True,
     has_planes = True,
@@ -192,13 +207,13 @@ compressed_surf = Container(
     unk_f = 0x00000000,
     xfer_func = 13,
     colorspace = 2,
-    stride = 1920,
+    stride = width,
     pix_size = 1,
     pel_w = 1,
     pel_h = 1,
     offset = 0,
-    width = 1920,
-    height = 1080,
+    width = width,
+    height = height,
     buf_size = 0x00A36000,
     unk_2d = 0,
     unk_31 = 0,
@@ -210,8 +225,8 @@ compressed_surf = Container(
     has_comp = True,
     planes = [
         Container(
-            width = 1920,
-            height = 1080,
+            width = width,
+            height = height,
             base = 0,
             offset = 0,
             stride = 0x1e000,
@@ -222,8 +237,8 @@ compressed_surf = Container(
             unk2 = 0x05,
         ),
         Container(
-            width = 1920,
-            height = 1080,
+            width = width,
+            height = height,
             base = 0x818000,
             offset = 0x818000,
             stride = 0x7800,
@@ -255,23 +270,28 @@ compressed_surf = Container(
 )
 
 
-iova = 0x420000
-
-surfaces = [surf, None, None, None]
-#surfaces = [compressed_surf, None, None, None]
-surfAddr = [iova, 0, 0, 0]
-
 outB = ByRef(False)
 
 swaps = mgr.swaps
 
 mon.poll()
 
-buf = u.memalign(0x4000, 16<<20)
+fb_size = align_up(width * height * 4, 8 * 0x4000)
+print(f"Dispaly {width}x{height}, fb size: {fb_size}")
 
-iface.writemem(buf, open("asahi.bin", "rb").read())
+buf = u.memalign(0x4000, fb_size)
 
-disp_dart.iomap_at(0, iova, buf, 16<<20)
+img = open("asahi.bin", "rb")
+
+block = 512 * 1024
+for off in range(0, fb_size, block):
+    iface.writemem(buf + off, img.read(min(block, fb_size - off)))
+
+iova = disp_dart.iomap(0, buf, fb_size)
+
+surfaces = [surf, None, None, None]
+#surfaces = [compressed_surf, None, None, None]
+surfAddr = [iova, 0, 0, 0]
 
 def submit():
     swap_rec.swap_id = swapid.val

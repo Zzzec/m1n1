@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../build/build_cfg.h"
+#include "../build/build_tag.h"
+
 #include "../config.h"
 
 #include "adt.h"
@@ -25,8 +28,6 @@
 #include "utils.h"
 #include "wdt.h"
 #include "xnuboot.h"
-
-#include "../build/build_tag.h"
 
 struct vector_args next_stage;
 
@@ -168,8 +169,8 @@ void m1n1_main(void)
 
     printf("Vectoring to next stage...\n");
 
-    next_stage.entry(next_stage.args[0], next_stage.args[1], next_stage.args[2],
-                     next_stage.args[3]);
+    next_stage.entry(next_stage.args[0], next_stage.args[1], next_stage.args[2], next_stage.args[3],
+                     next_stage.args[4]);
 
     panic("Next stage returned!\n");
 }
