@@ -7,6 +7,7 @@
 #include "malloc.h"
 #include "memory.h"
 #include "pcie.h"
+#include "sep.h"
 #include "smp.h"
 #include "types.h"
 #include "usb.h"
@@ -72,6 +73,78 @@ void get_notchless_fb(u64 *fb_base, u64 *fb_height)
 
     *fb_base += cur_boot_args.video.stride * offset;
     *fb_height = new_height;
+}
+
+static int dt_set_rng_seed_sep(int node)
+{
+    u64 kaslr_seed;
+    uint8_t rng_seed[128]; // same size used by Linux for kexec
+
+    if (sep_get_random(&kaslr_seed, sizeof(kaslr_seed)) != sizeof(kaslr_seed))
+        bail("SEP: couldn't get enough random bytes for KASLR seed");
+    if (sep_get_random(rng_seed, sizeof(rng_seed)) != sizeof(rng_seed))
+        bail("SEP: couldn't get enough random bytes for RNG seed");
+
+    if (fdt_setprop_u64(dt, node, "kaslr-seed", kaslr_seed))
+        bail("FDT: couldn't set kaslr-seed\n");
+    if (fdt_setprop(dt, node, "rng-seed", rng_seed, sizeof(rng_seed)))
+        bail("FDT: couldn't set rng-seed\n");
+
+    printf("FDT: Passing %ld bytes of KASLR seed and %ld bytes of random seed\n",
+           sizeof(kaslr_seed), sizeof(rng_seed));
+
+    return 0;
+}
+
+static int dt_set_rng_seed_adt(int node)
+{
+    int anode = adt_path_offset(adt, "/chosen");
+
+    if (anode < 0)
+        bail("ADT: /chosen not found\n");
+
+    const uint8_t *random_seed;
+    u32 seed_length;
+
+    random_seed = adt_getprop(adt, anode, "random-seed", &seed_length);
+    if (random_seed) {
+        printf("ADT: %d bytes of random seed available\n", seed_length);
+
+        if (seed_length >= sizeof(u64)) {
+            u64 kaslr_seed;
+
+            memcpy(&kaslr_seed, random_seed, sizeof(kaslr_seed));
+
+            // Ideally we would throw away the kaslr_seed part of random_seed
+            // and avoid reusing it. However, Linux wants 64 bytes of bootloader
+            // random seed to consider its CRNG initialized, which is exactly
+            // how much iBoot gives us. This probably doesn't matter, since
+            // that entropy is going to get shuffled together and Linux makes
+            // sure to clear the FDT randomness after using it anyway, but just
+            // in case let's mix in a few bits from our own KASLR base to make
+            // kaslr_seed unique.
+
+            kaslr_seed ^= (u64)cur_boot_args.virt_base;
+
+            if (fdt_setprop_u64(dt, node, "kaslr-seed", kaslr_seed))
+                bail("FDT: couldn't set kaslr-seed\n");
+
+            printf("FDT: KASLR seed initialized\n");
+        } else {
+            printf("ADT: not enough random data for kaslr-seed\n");
+        }
+
+        if (seed_length) {
+            if (fdt_setprop(dt, node, "rng-seed", random_seed, seed_length))
+                bail("FDT: couldn't set rng-seed\n");
+
+            printf("FDT: Passing %d bytes of random seed\n", seed_length);
+        }
+    } else {
+        printf("ADT: no random-seed available!\n");
+    }
+
+    return 0;
 }
 
 static int dt_set_chosen(void)
@@ -162,51 +235,22 @@ static int dt_set_chosen(void)
         // range already.
     }
 
-    int anode = adt_path_offset(adt, "/chosen");
-
-    if (anode < 0)
-        bail("ADT: /chosen not found\n");
-
-    const uint8_t *random_seed;
-    u32 seed_length;
-
-    random_seed = adt_getprop(adt, anode, "random-seed", &seed_length);
-    if (random_seed) {
-        printf("ADT: %d bytes of random seed available\n", seed_length);
-
-        if (seed_length >= sizeof(u64)) {
-            u64 kaslr_seed;
-
-            memcpy(&kaslr_seed, random_seed, sizeof(kaslr_seed));
-
-            // Ideally we would throw away the kaslr_seed part of random_seed
-            // and avoid reusing it. However, Linux wants 64 bytes of bootloader
-            // random seed to consider its CRNG initialized, which is exactly
-            // how much iBoot gives us. This probably doesn't matter, since
-            // that entropy is going to get shuffled together and Linux makes
-            // sure to clear the FDT randomness after using it anyway, but just
-            // in case let's mix in a few bits from our own KASLR base to make
-            // kaslr_seed unique.
-
-            kaslr_seed ^= (u64)cur_boot_args.virt_base;
-
-            if (fdt_setprop_u64(dt, node, "kaslr-seed", kaslr_seed))
-                bail("FDT: couldn't set kaslr-seed\n");
-
-            printf("FDT: KASLR seed initialized\n");
-        } else {
-            printf("ADT: not enough random data for kaslr-seed\n");
-        }
-
-        if (seed_length) {
-            if (fdt_setprop(dt, node, "rng-seed", random_seed, seed_length))
-                bail("FDT: couldn't set rng-seed\n");
-
-            printf("FDT: Passing %d bytes of random seed\n", seed_length);
-        }
+    int ipd = adt_path_offset(adt, "/arm-io/spi3/ipd");
+    if (ipd < 0) {
+        printf("ADT: /arm-io/spi3/ipd not found, no keyboard\n");
     } else {
-        printf("ADT: no random-seed available!\n");
+        u32 len;
+        const u8 *kblang = adt_getprop(adt, ipd, "kblang-calibration", &len);
+        if (kblang && len >= 2) {
+            if (fdt_setprop_u32(dt, node, "asahi,kblang-code", kblang[1]))
+                bail("FDT: couldn't set asahi,kblang-code");
+        } else {
+            printf("ADT: kblang-calibration not found, no keyboard layout\n");
+        }
     }
+
+    if (dt_set_rng_seed_sep(node))
+        return dt_set_rng_seed_adt(node);
 
     return 0;
 }
