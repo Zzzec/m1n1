@@ -97,6 +97,16 @@ const struct fuse_bits pcie_fuse_bits_t6000[] = {
     {0x0048, 0x6220, 8, 14, 3},  {0x0048, 0x6238, 2, 0, 6},   {},
 };
 
+/* clang-format off */
+const struct fuse_bits pcie_fuse_bits_t8112[] = {
+    {0x0490, 0x6238, 0, 0, 6},   {0x0490, 0x6220, 6, 14, 3},  {0x0490, 0x62a4, 12, 17, 2},
+    {0x0490, 0x5018, 14, 2, 1},  {0x0490, 0x5220, 15, 14, 3}, {0x0490, 0x52a4, 18, 17, 2},
+    {0x0490, 0x5278, 20, 20, 3}, {0x0490, 0x522c, 23, 12, 3}, {0x0490, 0x522c, 26, 9, 2},
+    {0x0490, 0x522c, 28, 16, 4}, {0x0494, 0x522c, 0, 20, 1},  {0x0494, 0x1204, 5, 2, 5},
+    {},
+};
+/* clang-format on */
+
 static bool pcie_initialized = false;
 static u64 rc_base;
 static u64 phy_base;
@@ -129,6 +139,9 @@ int pcie_init(void)
     } else if (adt_is_compatible(adt, adt_offset, "apcie,t6000")) {
         fuse_bits = pcie_fuse_bits_t6000;
         printf("pcie: Initializing t6000 PCIe controller\n");
+    } else if (adt_is_compatible(adt, adt_offset, "apcie,t8112")) {
+        fuse_bits = pcie_fuse_bits_t8112;
+        printf("pcie: Initializing t8112 PCIe controller\n");
     } else {
         printf("pcie: Unsupported compatible\n");
         return -1;
@@ -308,6 +321,20 @@ int pcie_init(void)
 
         u32 max_speed;
         if (ADT_GETPROP(adt, bridge_offset, "maximum-link-speed", &max_speed) >= 0) {
+            /* Apple changed how they announce the link speed for the 10gb nic
+             * at the latest in MacOS 12.3. The "lan-10gb" subnode has now a
+             * "target-link-speed" property and "maximum-link-speed" remains
+             * at 1.
+             */
+            int lan_10gb = adt_subnode_offset(adt, bridge_offset, "lan-10gb");
+            if (lan_10gb > 0) {
+                int target_speed;
+                if (ADT_GETPROP(adt, lan_10gb, "target-link-speed", &target_speed) >= 0) {
+                    if (target_speed > 0)
+                        max_speed = target_speed;
+                }
+            }
+
             printf("pcie: Port %d max speed = %d\n", port, max_speed);
 
             if (max_speed == 0) {

@@ -2,6 +2,7 @@
 
 #include "exception.h"
 #include "aic.h"
+#include "aic_regs.h"
 #include "cpu_regs.h"
 #include "gxf.h"
 #include "iodev.h"
@@ -83,9 +84,8 @@ static char *ec_table[0x40] = {
     [0x3c] = "brk (a64)",
 };
 
-static const char *get_exception_source(int el12)
+static const char *get_exception_source(u64 spsr)
 {
-    u64 spsr = el12 ? mrs(SPSR_EL12) : mrs(SPSR_EL1);
     u64 aspsr = in_gl12() ? mrs(SYS_IMP_APL_ASPSR_GL1) : 0;
     const char *m_desc = NULL;
 
@@ -123,8 +123,21 @@ void exception_initialize(void)
 {
     msr(VBAR_EL1, _vectors_start);
 
+    // Clear FIQ sources
+    msr(CNTP_CTL_EL0, 7L);
+    msr(CNTV_CTL_EL0, 7L);
+    if (in_el2()) {
+        msr(CNTP_CTL_EL02, 7L);
+        msr(CNTV_CTL_EL02, 7L);
+    }
+    reg_clr(SYS_IMP_APL_PMCR0, PMCR0_IACT | PMCR0_IMODE_MASK);
+    reg_clr(SYS_IMP_APL_UPMCR0, UPMCR0_IMODE_MASK);
+    msr(SYS_IMP_APL_IPI_SR_EL1, IPI_SR_PENDING);
+
     if (is_primary_core())
         msr(DAIF, 0 << 6); // Enable SError, IRQ and FIQ
+    else
+        msr(DAIF, 3 << 6); // Disable IRQ and FIQ
 
     if (in_el2()) {
         // Set up a sane HCR_EL2
@@ -151,11 +164,14 @@ void exception_shutdown(void)
 
 void print_regs(u64 *regs, int el12)
 {
+    bool in_gl;
     u64 sp = ((u64)(regs)) + 256;
 
-    u64 spsr = el12 ? mrs(SPSR_EL12) : mrs(SPSR_EL1);
+    in_gl = in_gl12();
 
-    printf("Exception taken from %s\n", get_exception_source(el12));
+    u64 spsr = in_gl ? mrs(SYS_IMP_APL_SPSR_GL1) : (el12 ? mrs(SPSR_EL12) : mrs(SPSR_EL1));
+
+    printf("Exception taken from %s\n", get_exception_source(spsr));
     printf("Running in %s\n", get_exception_level());
     printf("MPIDR: 0x%lx\n", mrs(MPIDR_EL1));
     printf("Registers: (@%p)\n", regs);
@@ -168,23 +184,26 @@ void print_regs(u64 *regs, int el12)
     printf("x24-x27: %016lx %016lx %016lx %016lx\n", regs[24], regs[25], regs[26], regs[27]);
     printf("x28-x30: %016lx %016lx %016lx\n", regs[28], regs[29], regs[30]);
 
-    u64 elr = el12 ? mrs(ELR_EL12) : mrs(ELR_EL1);
-    u64 esr = el12 ? mrs(ESR_EL12) : mrs(ESR_EL1);
+    u64 elr = in_gl ? mrs(SYS_IMP_APL_ELR_GL1) : (el12 ? mrs(ELR_EL12) : mrs(ELR_EL1));
+    u64 esr = in_gl ? mrs(SYS_IMP_APL_ESR_GL1) : (el12 ? mrs(ESR_EL12) : mrs(ESR_EL1));
+    u64 far = in_gl ? mrs(SYS_IMP_APL_FAR_GL1) : (el12 ? mrs(FAR_EL12) : mrs(FAR_EL1));
 
     printf("PC:       0x%lx (rel: 0x%lx)\n", elr, elr - (u64)_base);
     printf("SP:       0x%lx\n", sp);
-    printf("SPSR_EL1: 0x%lx\n", spsr);
+    printf("SPSR:     0x%lx\n", spsr);
     if (in_gl12()) {
         printf("ASPSR:    0x%lx\n", mrs(SYS_IMP_APL_ASPSR_GL1));
     }
-    printf("FAR_EL1:  0x%lx\n", el12 ? mrs(FAR_EL12) : mrs(FAR_EL1));
+    printf("FAR:      0x%lx\n", far);
 
     const char *ec_desc = ec_table[(esr >> 26) & 0x3f];
-    printf("ESR_EL1:  0x%lx (%s)\n", esr, ec_desc ? ec_desc : "?");
+    printf("ESR:      0x%lx (%s)\n", esr, ec_desc ? ec_desc : "?");
 
-    printf("L2C_ERR_STS: 0x%lx\n", mrs(SYS_IMP_APL_L2C_ERR_STS));
+    u64 sts = mrs(SYS_IMP_APL_L2C_ERR_STS);
+    printf("L2C_ERR_STS: 0x%lx\n", sts);
     printf("L2C_ERR_ADR: 0x%lx\n", mrs(SYS_IMP_APL_L2C_ERR_ADR));
     printf("L2C_ERR_INF: 0x%lx\n", mrs(SYS_IMP_APL_L2C_ERR_INF));
+    msr(SYS_IMP_APL_L2C_ERR_STS, sts);
 
     if (is_ecore()) {
         printf("E_LSU_ERR_STS: 0x%lx\n", mrs(SYS_IMP_APL_E_LSU_ERR_STS));
@@ -199,12 +218,13 @@ void print_regs(u64 *regs, int el12)
 
 void exc_sync(u64 *regs)
 {
-    u64 elr;
     u32 insn;
     int el12 = 0;
+    bool in_gl = in_gl12();
 
-    u64 spsr = mrs(SPSR_EL1);
-    u64 esr = mrs(ESR_EL1);
+    u64 spsr = in_gl ? mrs(SYS_IMP_APL_SPSR_GL1) : mrs(SPSR_EL1);
+    u64 esr = in_gl ? mrs(SYS_IMP_APL_ESR_GL1) : mrs(ESR_EL1);
+    u64 elr = in_gl ? mrs(SYS_IMP_APL_ELR_GL1) : mrs(ELR_EL1);
 
     if ((spsr & 0xf) == 0 && ((esr >> 26) & 0x3f) == 0x3c) {
         // On clean EL0 return, let the normal exception return
@@ -252,13 +272,13 @@ void exc_sync(u64 *regs)
 
     switch (exc_guard & GUARD_TYPE_MASK) {
         case GUARD_SKIP:
-            elr = mrs(ELR_EL1) + 4;
+            elr += 4;
             break;
         case GUARD_MARK:
             // Assuming this is a load or store, dest reg is in low bits
-            insn = read32(mrs(ELR_EL1));
+            insn = read32(elr);
             regs[insn & 0x1f] = 0xacce5515abad1dea;
-            elr = mrs(ELR_EL1) + 4;
+            elr += 4;
             break;
         case GUARD_RETURN:
             regs[0] = 0xacce5515abad1dea;
@@ -275,7 +295,10 @@ void exc_sync(u64 *regs)
 
     if (!(exc_guard & GUARD_SILENT))
         printf("Recovering from exception (ELR=0x%lx)\n", elr);
-    msr(ELR_EL1, elr);
+    if (in_gl)
+        msr(SYS_IMP_APL_ELR_GL1, elr);
+    else
+        msr(ELR_EL1, elr);
 
     sysop("isb");
     sysop("dsb sy");
@@ -285,8 +308,9 @@ void exc_irq(u64 *regs)
 {
     u32 reason = aic_ack();
 
-    printf("Exception: IRQ (from %s) type: %d num: %d mpidr: %lx\n", get_exception_source(0),
-           reason >> 16, reason & 0xffff, mrs(MPIDR_EL1));
+    printf("Exception: IRQ (from %s) die: %lu type: %lu num: %lu mpidr: %lx\n",
+           get_exception_source(0), FIELD_GET(AIC_EVENT_DIE, reason),
+           FIELD_GET(AIC_EVENT_TYPE, reason), FIELD_GET(AIC_EVENT_NUM, reason), mrs(MPIDR_EL1));
 
     UNUSED(regs);
     // print_regs(regs);

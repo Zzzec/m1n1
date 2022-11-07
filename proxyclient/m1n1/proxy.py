@@ -66,6 +66,20 @@ class EXC_RET(IntEnum):
     EXIT_GUEST = 3
     STEP = 4
 
+class DCP_SHUTDOWN_MODE(IntEnum):
+    QUIESCED = 0
+    SLEEP_IF_EXTERNAL = 1
+    SLEEP = 2
+
+class PIX_FMT(IntEnum):
+    XRGB = 0
+    XBGR = 1
+
+class DART(IntEnum):
+    T8020 = 0
+    T8110 = 1
+    T6000 = 2
+
 ExcInfo = Struct(
     "regs" / Array(32, Int64ul),
     "spsr" / RegAdapter(SPSR),
@@ -121,7 +135,7 @@ class UartInterface(Reloadable):
         self.debug = debug
         self.devpath = None
         if device is None:
-            device = os.environ.get("M1N1DEVICE", "/dev/ttyACM0:115200")
+            device = os.environ.get("M1N1DEVICE", "/dev/m1n1:115200")
         if isinstance(device, str):
             baud = 115200
             if ":" in device:
@@ -326,6 +340,9 @@ class UartInterface(Reloadable):
             else:
                 raise UartTimeout("Reconnection timed out")
             print(" Connected")
+
+    def wait_and_handle_boot(self):
+        self.handle_boot(self.wait_boot())
 
     def nop(self):
         features = Feature.get_all()
@@ -546,6 +563,7 @@ class M1N1Proxy(Reloadable):
     P_PMGR_CLOCK_DISABLE = 0x801
     P_PMGR_ADT_CLOCKS_ENABLE = 0x802
     P_PMGR_ADT_CLOCKS_DISABLE = 0x803
+    P_PMGR_RESET = 0x804
 
     P_IODEV_SET_USAGE = 0x900
     P_IODEV_CAN_READ = 0x901
@@ -573,6 +591,9 @@ class M1N1Proxy(Reloadable):
     P_HV_WDT_START = 0xc07
     P_HV_START_SECONDARY = 0xc08
     P_HV_SWITCH_CPU = 0xc09
+    P_HV_SET_TIME_STEALING = 0xc0a
+    P_HV_PIN_CPU = 0xc0b
+    P_HV_WRITE_HCR = 0xc0c
 
     P_FB_INIT = 0xd00
     P_FB_SHUTDOWN = 0xd01
@@ -592,7 +613,14 @@ class M1N1Proxy(Reloadable):
     P_NVME_READ = 0xf02
     P_NVME_FLUSH = 0xf03
 
-    P_MCC_HV_UNMAP_CARVEOUTS = 0x1000
+    P_MCC_GET_CARVEOUTS = 0x1000
+
+    P_DISPLAY_INIT = 0x1100
+    P_DISPLAY_CONFIGURE = 0x1101
+    P_DISPLAY_SHUTDOWN = 0x1102
+
+    P_DAPF_INIT_ALL = 0x1200
+    P_DAPF_INIT = 0x1201
 
     def __init__(self, iface, debug=False):
         self.debug = debug
@@ -650,7 +678,7 @@ class M1N1Proxy(Reloadable):
     def exit(self, retval=0):
         self.request(self.P_EXIT, retval)
     def call(self, addr, *args, reboot=False):
-        if len(args) > 4:
+        if len(args) > 5:
             raise ValueError("Too many arguments")
         return self.request(self.P_CALL, addr, *args, reboot=reboot)
     def reload(self, addr, *args, el1=False):
@@ -751,67 +779,67 @@ class M1N1Proxy(Reloadable):
         '''Or 64 bit value of data into memory at addr and return result'''
         if addr & 7:
             raise AlignmentError()
-        self.request(self.P_SET64, addr, data)
+        return self.request(self.P_SET64, addr, data)
     def set32(self, addr, data):
         '''Or 32 bit value of data into memory at addr and return result'''
         if addr & 3:
             raise AlignmentError()
-        self.request(self.P_SET32, addr, data)
+        return self.request(self.P_SET32, addr, data)
     def set16(self, addr, data):
         '''Or 16 bit value of data into memory at addr and return result'''
         if addr & 1:
             raise AlignmentError()
-        self.request(self.P_SET16, addr, data)
+        return self.request(self.P_SET16, addr, data)
     def set8(self, addr, data):
         '''Or byte value of data into memory at addr and return result'''
-        self.request(self.P_SET8, addr, data)
+        return self.request(self.P_SET8, addr, data)
 
     def clear64(self, addr, data):
         '''Clear bits in 64 bit memory at address addr that are set
     in parameter data and return result'''
         if addr & 7:
             raise AlignmentError()
-        self.request(self.P_CLEAR64, addr, data)
+        return self.request(self.P_CLEAR64, addr, data)
     def clear32(self, addr, data):
         '''Clear bits in 32 bit memory at address addr that are set
     in parameter data and return result'''
         if addr & 3:
             raise AlignmentError()
-        self.request(self.P_CLEAR32, addr, data)
+        return self.request(self.P_CLEAR32, addr, data)
     def clear16(self, addr, data):
         '''Clear bits in 16 bit memory at address addr that are set
     in parameter data and return result'''
         if addr & 1:
             raise AlignmentError()
-        self.request(self.P_CLEAR16, addr, data)
+        return self.request(self.P_CLEAR16, addr, data)
     def clear8(self, addr, data):
         '''Clear bits in 8 bit memory at addr that are set in data
     and return result'''
-        self.request(self.P_CLEAR8, addr, data)
+        return self.request(self.P_CLEAR8, addr, data)
 
     def mask64(self, addr, clear, set):
         '''Clear bits in 64 bit memory at address addr that are
  set in clear, then set the bits in set and return result'''
         if addr & 7:
             raise AlignmentError()
-        self.request(self.P_MASK64, addr, clear, set)
+        return self.request(self.P_MASK64, addr, clear, set)
     def mask32(self, addr, clear, set):
         '''Clear bits in 32 bit memory at address addr that are
  set in clear, then set the bits in set and return result'''
         if addr & 3:
             raise AlignmentError()
-        self.request(self.P_MASK32, addr, clear, set)
+        return self.request(self.P_MASK32, addr, clear, set)
     def mask16(self, addr, clear, set):
         '''Clear select bits in 16 bit memory addr that are set
  in clear parameter, then set the bits in set parameter and return result'''
         if addr & 1:
             raise AlignmentError()
-        self.request(self.P_MASK16, addr, clear, set)
+        return self.request(self.P_MASK16, addr, clear, set)
     def mask8(self, addr, clear, set):
         '''Clear bits in 1 byte memory at addr that are set
  in clear parameter, then set the bits in set parameter
  and return the result'''
-        self.request(self.P_MASK8, addr, clear, set)
+        return self.request(self.P_MASK8, addr, clear, set)
 
     def writeread64(self, addr, data):
         return self.request(self.P_WRITEREAD64, addr, data)
@@ -858,8 +886,8 @@ class M1N1Proxy(Reloadable):
         self.request(self.P_IC_IALLU)
     def ic_ivau(self, addr, size):
         self.request(self.P_IC_IVAU, addr, size)
-    def ic_ivac(self, addr, size):
-        self.request(self.P_IC_IVAC, addr, size)
+    def dc_ivac(self, addr, size):
+        self.request(self.P_DC_IVAC, addr, size)
     def dc_isw(self, sw):
         self.request(self.P_DC_ISW, sw)
     def dc_csw(self, sw):
@@ -935,6 +963,8 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_PMGR_ADT_CLOCKS_ENABLE, path)
     def pmgr_adt_clocks_disable(self, path):
         return self.request(self.P_PMGR_ADT_CLOCKS_DISABLE, path)
+    def pmgr_reset(self, die, name):
+        return self.request(self.P_PMGR_RESET, die, name)
 
     def iodev_set_usage(self, iodev, usage):
         return self.request(self.P_IODEV_SET_USAGE, iodev, usage)
@@ -958,8 +988,8 @@ class M1N1Proxy(Reloadable):
     def tunables_apply_local_addr(self, path, prop, base):
         return self.request(self.P_TUNABLES_APPLY_LOCAL, path, prop, base)
 
-    def dart_init(self, base, sid):
-        return self.request(self.P_DART_INIT, base, sid)
+    def dart_init(self, base, sid, dart_type=DART.T8020):
+        return self.request(self.P_DART_INIT, base, sid, dart_type)
     def dart_shutdown(self, dart):
         return self.request(self.P_DART_SHUTDOWN, dart)
     def dart_map(self, dart, iova, bfr, len):
@@ -989,16 +1019,22 @@ class M1N1Proxy(Reloadable):
         return self.request(self.P_HV_START_SECONDARY, cpu, entry, *args)
     def hv_switch_cpu(self, cpu):
         return self.request(self.P_HV_SWITCH_CPU, cpu)
+    def hv_set_time_stealing(self, enabled, reset):
+        return self.request(self.P_HV_SET_TIME_STEALING, int(bool(enabled)), int(bool(reset)))
+    def hv_pin_cpu(self, cpu):
+        return self.request(self.P_HV_PIN_CPU, cpu)
+    def hv_write_hcr(self, hcr):
+        return self.request(self.P_HV_WRITE_HCR, hcr)
 
     def fb_init(self):
         return self.request(self.P_FB_INIT)
     def fb_shutdown(self, restore_logo=True):
         return self.request(self.P_FB_SHUTDOWN, restore_logo)
-    def fb_blit(self, x, y, w, h, ptr, stride):
-        return self.request(self.P_FB_BLIT, x, y, w, h, ptr, stride)
+    def fb_blit(self, x, y, w, h, ptr, stride, pix_fmt=PIX_FMT.XRGB):
+        return self.request(self.P_FB_BLIT, x, y, w, h, ptr, stride | pix_fmt << 32)
     def fb_unblit(self, x, y, w, h, ptr, stride):
         return self.request(self.P_FB_UNBLIT, x, y, w, h, ptr, stride)
-    def fb_fill(self, color):
+    def fb_fill(self, x, y, w, h, color):
         return self.request(self.P_FB_FILL, x, y, w, h, color)
     def fb_clear(self, color):
         return self.request(self.P_FB_CLEAR, color)
@@ -1023,15 +1059,27 @@ class M1N1Proxy(Reloadable):
     def nvme_flush(self, nsid):
         return self.request(self.P_NVME_FLUSH, nsid)
 
-    def mcc_hv_unmap_carveouts(self):
-        return self.request(self.P_MCC_HV_UNMAP_CARVEOUTS)
+    def mcc_get_carveouts(self):
+        return self.request(self.P_MCC_GET_CARVEOUTS)
+
+    def display_init(self):
+        return self.request(self.P_DISPLAY_INIT)
+    def display_configure(self, cfg):
+        return self.request(self.P_DISPLAY_CONFIGURE, cfg)
+    def display_shutdown(self, mode):
+        return self.request(self.P_DISPLAY_SHUTDOWN, mode)
+
+    def dapf_init_all(self):
+        return self.request(self.P_DAPF_INIT_ALL)
+    def dapf_init(self, path):
+        return self.request(self.P_DAPF_INIT, path)
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__ == __name__)
 
 if __name__ == "__main__":
     import serial
-    uartdev = os.environ.get("M1N1DEVICE", "/dev/ttyACM0")
+    uartdev = os.environ.get("M1N1DEVICE", "/dev/m1n1")
     usbuart = serial.Serial(uartdev, 115200)
     uartif = UartInterface(usbuart, debug=True)
     print("Sending NOP...", end=' ')

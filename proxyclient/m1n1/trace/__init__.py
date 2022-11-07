@@ -54,7 +54,6 @@ class Tracer(Reloadable):
     DEFAULT_MODE = TraceMode.ASYNC
 
     def __init__(self, hv, verbose=False, ident=None):
-        super().__init__()
         self.hv = hv
         self.ident = ident or type(self).__name__
         self.regmaps = {}
@@ -125,16 +124,22 @@ class Tracer(Reloadable):
             self.hv.add_tracer(zone, self.ident, mode, self.evt_rw if read else None,
                                self.evt_rw if write else None, **kwargs)
 
-    def trace_regmap(self, start, size, cls, mode=None, name=None, prefix=None):
+    def trace_regmap(self, start, size, cls, mode=None, name=None, prefix=None, regmap_offset=0):
         if mode is None:
             mode = self.DEFAULT_MODE
         if name is None:
             name = cls.__name__
-        regmap = cls(self._cache, start)
-        regmap.cached = cls(self._cache.cached, start)
+
+        regmap = self.regmaps.get(start - regmap_offset, None)
+        if regmap is None:
+            regmap = cls(self._cache, start - regmap_offset)
+            regmap.cached = cls(self._cache.cached, start - regmap_offset)
+            self.regmaps[start - regmap_offset] = regmap
+        else:
+            assert isinstance(regmap, cls)
+
         setattr(self, name, regmap)
         self.trace(start, size, mode=mode, regmap=regmap, prefix=prefix)
-        self.regmaps[start] = regmap
 
     def start(self):
         pass
@@ -142,8 +147,8 @@ class Tracer(Reloadable):
     def stop(self):
         self.hv.clear_tracers(self.ident)
 
-    def log(self, msg):
-        self.hv.log(f"[{self.ident}] {msg}")
+    def log(self, msg, show_cpu=True):
+        self.hv.log(f"[{self.ident}] {msg}", show_cpu=show_cpu)
 
 class PrintTracer(Tracer):
     def __init__(self, hv, device_addr_tbl):
@@ -151,20 +156,23 @@ class PrintTracer(Tracer):
         self.device_addr_tbl = device_addr_tbl
         self.log_file = None
 
-    def event_mmio(self, evt):
-        dev, zone = self.device_addr_tbl.lookup(evt.addr)
+    def event_mmio(self, evt, name=None, start=None):
+        dev, zone2 = self.device_addr_tbl.lookup(evt.addr)
+        if name is None:
+            name = dev
+            start = zone2.start
         t = "W" if evt.flags.WRITE else "R"
         m = "+" if evt.flags.MULTI else " "
-        logline = (f"[cpu{evt.flags.CPU}][0x{evt.pc:016x}] MMIO: {t}.{1<<evt.flags.WIDTH:<2}{m} " +
-                   f"0x{evt.addr:x} ({dev}, offset {evt.addr - zone.start:#04x}) = 0x{evt.data:x}")
+        logline = (f"[cpu{evt.flags.CPU}] [0x{evt.pc:016x}] MMIO: {t}.{1<<evt.flags.WIDTH:<2}{m} " +
+                   f"0x{evt.addr:x} ({name}, offset {evt.addr - start:#04x}) = 0x{evt.data:x}")
         print(logline)
         if self.log_file:
             self.log_file.write(f"# {logline}\n")
             width = 8 << evt.flags.WIDTH
             if evt.flags.WRITE:
-                stmt = f"p.write{width}({zone.start:#x} + {evt.addr - zone.start:#x}, {evt.data:#x})\n"
+                stmt = f"p.write{width}({start:#x} + {evt.addr - start:#x}, {evt.data:#x})\n"
             else:
-                stmt = f"p.read{width}({zone.start:#x} + {evt.addr - zone.start:#x})\n"
+                stmt = f"p.read{width}({start:#x} + {evt.addr - start:#x})\n"
             self.log_file.write(stmt)
 
 class ADTDevTracer(Tracer):
@@ -177,14 +185,28 @@ class ADTDevTracer(Tracer):
         self.dev = hv.adt[devpath]
 
     @classmethod
-    def _reloadcls(cls):
-        cls.REGMAPS = [i._reloadcls() if i else None for i in cls.REGMAPS]
-        return super()._reloadcls()
+    def _reloadcls(cls, force=False):
+        regmaps = []
+        for i in cls.REGMAPS:
+            if i is None:
+                reloaded = None
+            elif isinstance(i, tuple):
+                reloaded = (i[0]._reloadcls(force), i[1])
+            else:
+                reloaded = i._reloadcls(force)
+            regmaps.append(reloaded)
+        cls.REGMAPS = regmaps
+
+        return super()._reloadcls(force)
 
     def start(self):
         for i in range(len(self.dev.reg)):
             if i >= len(self.REGMAPS) or (regmap := self.REGMAPS[i]) is None:
                 continue
+            if isinstance(regmap, tuple):
+                regmap, regmap_offset = regmap
+            else:
+                regmap_offset = 0
             prefix = name = None
             if i < len(self.NAMES):
                 name = self.NAMES[i]
@@ -192,7 +214,7 @@ class ADTDevTracer(Tracer):
                 prefix = self.PREFIXES[i]
 
             start, size = self.dev.get_reg(i)
-            self.trace_regmap(start, size, regmap, name=name, prefix=prefix)
+            self.trace_regmap(start, size, regmap, name=name, prefix=prefix, regmap_offset=regmap_offset)
 
 __all__.extend(k for k, v in globals().items()
                if (callable(v) or isinstance(v, type)) and v.__module__.startswith(__name__))

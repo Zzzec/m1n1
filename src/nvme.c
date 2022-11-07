@@ -11,7 +11,8 @@
 #include "utils.h"
 
 #define NVME_TIMEOUT          1000000
-#define NVME_SHUTDOWN_TIMEOUT (5 * NVME_TIMEOUT)
+#define NVME_ENABLE_TIMEOUT   5000000
+#define NVME_SHUTDOWN_TIMEOUT 5000000
 #define NVME_QUEUE_SIZE       64
 
 #define NVME_CC            0x14
@@ -120,6 +121,7 @@ static_assert(sizeof(struct nvme_completion) == 16, "invalid nvme_completion siz
 static_assert(sizeof(struct apple_nvmmu_tcb) == 128, "invalid apple_nvmmu_tcb size");
 
 static bool nvme_initialized = false;
+static u8 nvme_die;
 
 static asc_dev_t *nvme_asc = NULL;
 static rtkit_dev_t *nvme_rtkit = NULL;
@@ -185,7 +187,7 @@ static bool nvme_ctrl_disable(void)
 
 static bool nvme_ctrl_enable(void)
 {
-    u64 timeout = timeout_calculate(NVME_TIMEOUT);
+    u64 timeout = timeout_calculate(NVME_ENABLE_TIMEOUT);
 
     mask32(nvme_base + NVME_CC, NVME_CC_SHN, NVME_CC_EN);
     while (!(read32(nvme_base + NVME_CSTS) & NVME_CSTS_RDY) && !timeout_expired(timeout))
@@ -300,6 +302,14 @@ bool nvme_init(void)
         return NULL;
     }
 
+    u32 cg;
+    if (ADT_GETPROP(adt, node, "clock-gates", &cg) < 0) {
+        printf("nvme: Error getting NVMe clock-gates\n");
+        return NULL;
+    }
+    nvme_die = FIELD_GET(PMGR_DIE_ID, cg);
+    printf("nvme: ANS is on die %d\n", nvme_die);
+
     if (adt_get_reg(adt, adt_path, "reg", 3, &nvme_base, NULL) < 0) {
         printf("nvme: Error getting NVMe base address.\n");
         return NULL;
@@ -320,7 +330,6 @@ bool nvme_init(void)
     nvme_asc = asc_init("/arm-io/ans");
     if (!nvme_asc)
         goto out_ioq;
-    asc_cpu_start(nvme_asc);
 
     nvme_sart = sart_init("/arm-io/sart-ans");
     if (!nvme_sart)
@@ -397,11 +406,14 @@ out_delete_cq:
     if (!nvme_exec_command(&adminq, &cmd, NULL))
         printf("nvme: delete cq command failed\n");
 out_disable_ctrl:
+    nvme_ctrl_shutdown();
     nvme_ctrl_disable();
     nvme_poll_syslog();
 out_shutdown:
     rtkit_sleep(nvme_rtkit);
-    pmgr_reset("ANS2");
+    // Some machines call this ANS, some ANS2...
+    pmgr_reset(nvme_die, "ANS");
+    pmgr_reset(nvme_die, "ANS2");
 out_rtkit:
     rtkit_free(nvme_rtkit);
 out_sart:
@@ -442,8 +454,9 @@ void nvme_shutdown(void)
         printf("nvme: timeout while waiting for CSTS.RDY to clear\n");
 
     rtkit_sleep(nvme_rtkit);
-    asc_cpu_stop(nvme_asc);
-    pmgr_reset("ANS2");
+    // Some machines call this ANS, some ANS2...
+    pmgr_reset(nvme_die, "ANS");
+    pmgr_reset(nvme_die, "ANS2");
     rtkit_free(nvme_rtkit);
     sart_free(nvme_sart);
     asc_free(nvme_asc);

@@ -60,10 +60,10 @@ class AFKRingBuf(Reloadable):
     def __init__(self, ep, base, size):
         self.ep = ep
         self.base = base
-        self.bufsize = size
 
         bs, unk = struct.unpack("<II", self.read_buf(0, 8))
-        assert (bs + 3 * self.BLOCK_SIZE) == self.bufsize
+        assert (bs + 3 * self.BLOCK_SIZE) == size
+        self.bufsize = bs
         self.rptr = 0
         self.wptr = 0
 
@@ -92,16 +92,18 @@ class AFKRingBuf(Reloadable):
             hdr = self.read_buf(3 * self.BLOCK_SIZE + self.rptr, 16)
             self.rptr += 16
             magic, size = struct.unpack("<4sI", hdr[:8])
-            assert magic == b"IOP "
-            if size > (self.bufsize - self.rptr - 16):
+            assert magic in [b"IOP ", b"AOP "]
+            if size > (self.bufsize - self.rptr):
                 hdr = self.read_buf(3 * self.BLOCK_SIZE, 16)
                 self.rptr = 16
                 magic, size = struct.unpack("<4sI", hdr[:8])
-                assert magic == b"IOP "
+                assert magic in [b"IOP ", b"AOP "]
 
             payload = self.read_buf(3 * self.BLOCK_SIZE + self.rptr, size)
             self.rptr = (align_up(self.rptr + size, self.BLOCK_SIZE)) % self.bufsize
+            self.update_rptr(self.rptr)
             yield hdr[8:] + payload
+            self.wptr = self.get_wptr()
 
         self.update_rptr(self.rptr)
 

@@ -15,6 +15,8 @@ from m1n1.proxyutils import RegMonitor
 
 print(f"Framebuffer at {u.ba.video.base:#x}")
 
+p.display_shutdown(DCP_SHUTDOWN_MODE.QUIESCED)
+
 dart = DART.from_adt(u, "arm-io/dart-dcp")
 disp_dart = DART.from_adt(u, "arm-io/dart-disp0")
 #disp_dart.dump_all()
@@ -25,13 +27,30 @@ dcp.dva_offset = getattr(u.adt["/arm-io/dcp"][0], "asc_dram_mask", 0)
 
 dcp.start()
 dcp.start_ep(0x23)
+dcp.start_ep(0x24)
 
-dcp.iboot.disp0.wait()
-dcp.iboot.disp0.setPower(True)
+dcp.iboot.wait_for("disp0")
+dcp.dptx.wait_for("dcpav0")
+dcp.dptx.wait_for("dcpdp0")
 
-hpd, ntim, ncolor = dcp.iboot.disp0.getModeCount()
+#dcp.dptx.dcpav0.setPower(False)
+#dcp.dptx.dcpav0.forceHotPlugDetect()
+#dcp.dptx.dcpav0.setVirtualDeviceMode(0)
+#dcp.dptx.dcpav0.setPower(True)
+#dcp.dptx.dcpav0.wakeDisplay()
+#dcp.dptx.dcpav0.sleepDisplay()
+#dcp.dptx.dcpav0.wakeDisplay()
+
+print("Waiting for HPD...")
+while True:
+    hpd, ntim, ncolor = dcp.iboot.disp0.getModeCount()
+    if hpd:
+        break
+
+print("HPD asserted")
 
 print(f"Connected:{hpd} Timing modes:{ntim} Color modes:{ncolor}")
+dcp.iboot.disp0.setPower(True)
 
 timing_modes = dcp.iboot.disp0.getTimingModes()
 print("Timing modes:")
@@ -84,4 +103,6 @@ dcp.iboot.disp0.swapEnd()
 
 run_shell(globals(), msg="Have fun!")
 
-dcp.stop()
+# full shutdown!
+dcp.stop(1)
+p.pmgr_reset(0, "DISP0_CPU0")

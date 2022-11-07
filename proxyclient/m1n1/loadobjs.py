@@ -10,21 +10,18 @@ from .asm import NM, LD, OBJCOPY, ARMAsm
 __all__ = ["LinkedProgram"]
 
 
-def _tool_cmdline(progname, args):
-    cmdline = progname.replace("%ARCH", ARMAsm.ARCH) + " " + args
-    return cmdline
-
-def tool_output_lines(progname, args):
-    cmdline = _tool_cmdline(progname, args)
-    with subprocess.Popen(cmdline, stdout=subprocess.PIPE, shell=True) as proc:
+def tool_output_lines(progname, *args):
+    with subprocess.Popen([progname.replace("%ARCH", ARMAsm.ARCH)] + list(args),
+            stdout=subprocess.PIPE) as proc:
         for line in proc.stdout:
             yield line.decode("ascii")
         proc.wait()
         if proc.returncode:
-            raise Exception(f"{repr(cmdline)} returned status {proc.returncode}")
+            raise Exception(f"{progname} (args: {args}) exited with status {proc.returncode}")
 
-def run_tool(progname, args):
-    subprocess.check_call(_tool_cmdline(progname, args), shell=True)
+def run_tool(progname, *args, silent=False):
+    subprocess.check_call([progname.replace("%ARCH", ARMAsm.ARCH)] + list(args),
+                        stdout=subprocess.DEVNULL if silent else None)
 
 
 class LinkedProgram:
@@ -53,7 +50,7 @@ class LinkedProgram:
 
         tmp = os.path.join(tempfile.mkdtemp(), "bin")
         path = os.path.join(self.SOURCE_ROOT, self.base_object)
-        run_tool(OBJCOPY, f"-O binary {path} {tmp} --only-section=.rela.dyn")
+        run_tool(OBJCOPY, "-O", "binary", path, tmp, "--only-section=.rela.dyn")
         rela_objfile = open(tmp, "rb").read()
 
         if rela_objfile[:len(rela_target)] != rela_target:
@@ -68,7 +65,7 @@ class LinkedProgram:
         path = pathlib.Path(self.SOURCE_ROOT, relpath)
         symaddrs = dict()
 
-        for line in tool_output_lines(NM, f"-g {path}"):
+        for line in tool_output_lines(NM, "-g", path):
             addr_str, t, name = line.split()
             addr = int(addr_str, 16) + offset
             if t in ignore:
@@ -102,9 +99,9 @@ class LinkedProgram:
             f.write("}\n")
             for sym in self.symbols:
                 f.write(f"{sym[1]} = 0x{sym[0]:x};\n")
-        run_tool(LD, f"-EL -maarch64elf -T {ld_script} -o {elffile} {objfile}")
-        run_tool(OBJCOPY, f"-O binary {elffile} {binfile}")
-        #run_tool("objdump", f"-d {elffile}")
+        run_tool(LD, "-EL", "-maarch64elf", "-T", ld_script, "-o", elffile, objfile)
+        run_tool(OBJCOPY, "-O", "binary", elffile, binfile)
+        #run_tool("objdump", "-d", elffile)
         self._load_elf_symbols(elffile, ignore="A")
         with open(binfile, "rb") as f:
             buf = f.read()
@@ -145,9 +142,9 @@ class LinkedProgram:
             yield args_copied
 
     def _wrap_call_to(self, addr):
-        def call_symbol(*args):
+        def call_symbol(*args, call=self.u.proxy.call):
             with self._copy_args_to_target(args) as args_copied:
-                return self.u.proxy.call(addr, *args_copied)
+                return call(addr, *args_copied)
         return call_symbol
 
     def lookup(self, addr):
@@ -156,8 +153,26 @@ class LinkedProgram:
             return None, None
         return self.symbols[idx]
 
+    def load_inline_c(self, source):
+        tmp = tempfile.mkdtemp()
+        cfile = tmp + ".c"
+        objfile = tmp + ".o"
+        with open(cfile, "w") as f:
+            f.write(source)
+        run_tool("make", "-C", self.SOURCE_ROOT, "invoke_cc",
+                 f"OBJFILE={objfile}", f"CFILE={cfile}", silent=True)
+        self.load_obj(objfile)
+
 
 if __name__ == "__main__":
     from m1n1.setup import *
     lp = LinkedProgram(u)
     lp.debug_printf("hello from the other side! (%d)\n", 42)
+    lp.load_inline_c('''
+        #include "utils.h"
+        int add(int a, int b) {
+            debug_printf("adding %d and %d\\n", a, b);
+            return a + b;
+        }
+    ''')
+    print(f"1 + 2 = {lp.add(1, 2)}")

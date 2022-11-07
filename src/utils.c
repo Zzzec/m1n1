@@ -97,6 +97,18 @@ void udelay(u32 d)
     sysop("isb");
 }
 
+u64 ticks_to_msecs(u64 ticks)
+{
+    // NOTE: only accurate if freq is even kHz
+    return ticks / (mrs(CNTFRQ_EL0) / 1000);
+}
+
+u64 ticks_to_usecs(u64 ticks)
+{
+    // NOTE: only accurate if freq is even MHz
+    return ticks / (mrs(CNTFRQ_EL0) / 1000000);
+}
+
 u64 timeout_calculate(u32 usec)
 {
     u64 delay = ((u64)usec) * mrs(CNTFRQ_EL0) / 1000000;
@@ -124,17 +136,28 @@ void spin_init(spinlock_t *lock)
 
 void spin_lock(spinlock_t *lock)
 {
+    s64 tmp;
     s64 me = smp_id();
     if (__atomic_load_n(&lock->lock, __ATOMIC_ACQUIRE) == me) {
         lock->count++;
         return;
     }
 
-    s64 free = -1;
-
-    while (!__atomic_compare_exchange_n(&lock->lock, &free, me, false, __ATOMIC_ACQUIRE,
-                                        __ATOMIC_RELAXED))
-        free = -1;
+    __asm__ volatile("1:\n"
+                     "mov\t%0, -1\n"
+                     "2:\n"
+                     "\tcasa\t%0, %2, %1\n"
+                     "\tcmn\t%0, 1\n"
+                     "\tbeq\t3f\n"
+                     "\tldxr\t%0, %1\n"
+                     "\tcmn\t%0, 1\n"
+                     "\tbeq\t2b\n"
+                     "\twfe\n"
+                     "\tb\t1b\n"
+                     "3:"
+                     : "=&r"(tmp), "+m"(lock->lock)
+                     : "r"(me)
+                     : "cc", "memory");
 
     assert(__atomic_load_n(&lock->lock, __ATOMIC_RELAXED) == me);
     lock->count++;

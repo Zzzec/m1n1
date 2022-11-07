@@ -54,11 +54,15 @@ class E_BUSWIDTH(IntEnum):
 class E_FRAME(IntEnum):
     F_1_WORD  = 0
     F_2_WORDS = 1
-    F_4_WRODS = 2
+    F_4_WORDS = 2
 
 class R_BUSWIDTH(Register32):
     WORD  = 2, 0, E_BUSWIDTH
     FRAME = 6, 4, E_FRAME
+
+class R_CARVEOUT(Register32):
+    SIZE = 31, 16
+    BASE = 15, 0
 
 class ADMACRegs(RegMap):
     TX_EN     = 0x0, Register32 # one bit per channel
@@ -81,13 +85,16 @@ class ADMACRegs(RegMap):
     # a 24 MHz always-running counter, top bit is always set
     COUNTER = 0x70, Register64
 
+    TX_SRAM_SIZE = 0x94, Register32
+    RX_SRAM_SIZE = 0x98, Register32
+
     # -- per-channel registers --
 
     CHAN_CTL = (irange(0x8000, 32, 0x200)), R_CHAN_CONTROL
 
-    CHAN_BUSWIDTH  = (irange(0x8040, 32, 0x200)), R_BUSWIDTH
-    # TODO: needs more research
-    CHAN_BURSTSIZE = (irange(0x8054, 32, 0x200)), Register32
+    CHAN_BUSWIDTH      = (irange(0x8040, 32, 0x200)), R_BUSWIDTH
+    CHAN_SRAM_CARVEOUT = (irange(0x8050, 32, 0x200)), R_CARVEOUT
+    CHAN_BURSTSIZE     = (irange(0x8054, 32, 0x200)), Register32
 
     CHAN_RESIDUE = irange(0x8064, 32, 0x200), Register32
 
@@ -150,6 +157,7 @@ class ADMACDescriptor(Reloadable):
 class ADMACReportFlags(Register32):
     UNK1 = 24
     UNK2 = 25
+    UNK4 = 26 # memory access fault?
     UNK3 = 27
     DESC_ID = 7, 0
 
@@ -243,6 +251,17 @@ class ADMACChannel(Reloadable):
         self.regs.CHAN_BURSTSIZE[self.ch].val = size
 
     @property
+    def sram_carveout(self):
+        reg = self.regs.CHAN_SRAM_CARVEOUT[self.ch].reg
+        return (reg.BASE, reg.SIZE)
+
+    @sram_carveout.setter
+    def sram_carveout(self, carveout):
+        base, size = carveout
+        self.regs.CHAN_SRAM_CARVEOUT[self.ch].reg = \
+                    R_CARVEOUT(BASE=base, SIZE=size)
+
+    @property
     def DESC_WRITE(self):
         if self.tx:
             return self.regs.TX_DESC_WRITE[self.ch//2]
@@ -322,9 +341,12 @@ class ADMACChannel(Reloadable):
     def status(self):
         return self.regs.CHAN_STATUS[self.ch, 0].reg
 
-    def poll(self):
+    def poll(self, wait=True):
         while not (self.status.DESC_DONE or self.status.RING_ERR):
             time.sleep(0.001)
+
+            if not wait:
+                break
 
         self.regs.CHAN_STATUS[self.ch,0].reg = R_CHAN_STATUS(DESC_DONE=1)
 
@@ -347,12 +369,15 @@ class ADMAC(Reloadable):
         self.p = u.proxy
         self.debug = debug
 
-        adt_node = u.adt[devpath]
+        if type(devpath) is str:
+            adt_node = u.adt[devpath]
+            # ADT's #dma-channels counts pairs of RX/TX channel, so multiply by two
+            self.nchans = adt_node._properties["#dma-channels"] * 2
+            self.base, _ = adt_node.get_reg(0)
+        else:
+            self.base = devpath
+            self.nchans = 26
 
-        # ADT's #dma-channels counts pairs of RX/TX channel, so multiply by two
-        self.nchans = adt_node._properties["#dma-channels"] * 2
-
-        self.base, _ = adt_node.get_reg(0)
         self.regs = ADMACRegs(u, self.base)
         self.dart, self.dart_stream = dart, dart_stream
 
@@ -372,6 +397,13 @@ class ADMAC(Reloadable):
     def iowrite(self, base, data):
         assert self.dart is not None
         self.dart.iowrite(self.dart_stream, base, data)
+
+    def fill_canary(self):
+        ranges = self.dart.iotranslate(self.dart_stream, 
+                                self.resmem_iova, self.resmem_size)
+        assert len(ranges) == 1
+        start, size = ranges[0]
+        self.p.memset8(start, 0xba, size)
 
     def get_buffer(self, size):
         assert size < self.resmem_size

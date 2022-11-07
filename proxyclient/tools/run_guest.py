@@ -4,6 +4,7 @@ import sys, pathlib, traceback
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 import argparse, pathlib
+from io import BytesIO
 
 parser = argparse.ArgumentParser(description='Run a Mach-O payload under the hypervisor')
 parser.add_argument('-s', '--symbols', type=pathlib.Path)
@@ -14,6 +15,9 @@ parser.add_argument('-e', '--hook-exceptions', action="store_true")
 parser.add_argument('-d', '--debug-xnu', action="store_true")
 parser.add_argument('-l', '--logfile', type=pathlib.Path)
 parser.add_argument('-C', '--cpus', default=None)
+parser.add_argument('-r', '--raw', action="store_true")
+parser.add_argument('-E', '--entry-point', action="store", type=int, help="Entry point for the raw image", default=0x800)
+parser.add_argument('-a', '--append-payload', type=pathlib.Path, action="append", default=[])
 parser.add_argument('payload', type=pathlib.Path)
 parser.add_argument('boot_args', default=[], nargs="*")
 args = parser.parse_args()
@@ -23,6 +27,7 @@ from m1n1.proxyutils import *
 from m1n1.utils import *
 from m1n1.shell import run_shell
 from m1n1.hv import HV
+from m1n1.hw.pmu import PMU
 
 iface = UartInterface()
 p = M1N1Proxy(iface, debug=False)
@@ -60,7 +65,23 @@ if len(args.boot_args) > 0:
 symfile = None
 if args.symbols:
     symfile = args.symbols.open("rb")
-hv.load_macho(args.payload.open("rb"), symfile=symfile)
+
+payload = args.payload.open("rb")
+
+if args.append_payload:
+    concat = BytesIO()
+    concat.write(payload.read())
+    for part in args.append_payload:
+        concat.write(part.open("rb").read())
+    concat.seek(0)
+    payload = concat
+
+if args.raw:
+    hv.load_raw(payload.read(), args.entry_point)
+else:
+    hv.load_macho(payload, symfile=symfile)
+
+PMU(u).reset_panic_counter()
 
 for i in args.script:
     try:
@@ -77,6 +98,6 @@ for i in args.command:
         args.shell = True
 
 if args.shell:
-    run_shell(hv.shell_locals, "Entering hypervisor shell. Type `start` to start the guest.")
-else:
-    hv.start()
+    run_shell(hv.shell_locals, "Entering hypervisor shell. Type ^D to start the guest.")
+
+hv.start()

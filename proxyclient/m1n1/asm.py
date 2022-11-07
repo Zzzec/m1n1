@@ -6,13 +6,17 @@ __all__ = ["AsmException", "ARMAsm"]
 uname = os.uname()
 
 if uname.sysname == "Darwin":
+    DEFAULT_ARCH = "aarch64-linux-gnu-"
     if uname.machine == "arm64":
         TOOLCHAIN = "/opt/homebrew/opt/llvm/bin/"
     else:
         TOOLCHAIN = "/usr/local/opt/llvm/bin/"
     USE_CLANG = "1"
 else:
-    DEFAULT_ARCH = "aarch64-linux-gnu-"
+    if uname.machine == "aarch64":
+        DEFAULT_ARCH = ""
+    else:
+        DEFAULT_ARCH = "aarch64-linux-gnu-"
     USE_CLANG = "0"
     TOOLCHAIN = ""
 
@@ -85,7 +89,10 @@ class BaseAsm(object):
         output = self._get(OBJDUMP, f"-zd {self.elffile}")
 
         for line in output.split("\n"):
-            if not line or line[0] != " ":
+            if not line or line.startswith("/"):
+                continue
+            sl = line.split()
+            if not sl or sl[0][-1] != ":":
                 continue
             yield line
 
@@ -95,8 +102,8 @@ class BaseAsm(object):
             self._tmp = None
 
 class ARMAsm(BaseAsm):
-    ARCH = os.path.join(os.environ.get("ARCH", "aarch64-linux-gnu-"))
-    CFLAGS = "-pipe -Wall -march=armv8.2-a"
+    ARCH = os.path.join(os.environ.get("ARCH", DEFAULT_ARCH))
+    CFLAGS = "-pipe -Wall -march=armv8.4-a"
     LDFLAGS = "-maarch64elf"
     HEADER = """
     .text

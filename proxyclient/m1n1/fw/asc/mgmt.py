@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: MIT
+import time
+
 from .base import *
 from ...utils import *
 
@@ -60,6 +62,7 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
         self.syslog_started = False
         self.iop_power_state = 0
         self.ap_power_state = 0
+        self.verbose = 1
 
     @msg_handler(1, Mgmt_Hello)
     def Hello(self, msg):
@@ -74,7 +77,8 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
             if msg.BITMAP & (1 << i):
                 epno = 32 * msg.BASE + i
                 self.asc.eps.append(epno)
-                self.log(f"Adding endpoint {epno:#x}")
+                if self.verbose > 0:
+                    self.log(f"Adding endpoint {epno:#x}")
 
         self.send(Mgmt_EPMap_Ack(BASE=msg.BASE, LAST=msg.LAST, MORE=0 if msg.LAST else 1))
 
@@ -89,13 +93,15 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
 
     @msg_handler(0xb, Mgmt_SetAPPower)
     def APPowerAck(self, msg):
-        self.log(f"AP power state is now {msg.STATE:#x}")
+        if self.verbose > 0:
+            self.log(f"AP power state is now {msg.STATE:#x}")
         self.ap_power_state = msg.STATE
         return True
 
     @msg_handler(7, Mgmt_IOPPowerAck)
     def IOPPowerAck(self, msg):
-        self.log(f"IOP power state is now {msg.STATE:#x}")
+        if self.verbose > 0:
+            self.log(f"IOP power state is now {msg.STATE:#x}")
         self.iop_power_state = msg.STATE
         return True
 
@@ -107,10 +113,14 @@ class ASCManagementEndpoint(ASCBaseEndpoint):
         self.log("Starting via message")
         self.send(Mgmt_SetIOPPower(STATE=0x220))
 
-    def wait_boot(self):
+    def wait_boot(self, timeout=None):
+        if timeout is not None:
+            timeout += time.time()
         while self.iop_power_state != 0x20 or self.ap_power_state != 0x20:
             self.asc.work()
-        self.log("startup complete")
+            if timeout and time.time() > timeout:
+                raise ASCTimeout("Boot timed out")
+        self.log("Startup complete")
 
     def start_ep(self, epno):
         self.send(Mgmt_StartEP(EP=epno, FLAG=2))

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 from enum import Enum
-import bisect, copy, heapq, importlib, sys, itertools, time, os, functools, struct, re
+import threading, traceback, bisect, copy, heapq, importlib, sys, itertools, time, os, functools, struct, re, signal
 from construct import Adapter, Int64ul, Int32ul, Int16ul, Int8ul, ExprAdapter, GreedyRange, ListContainer, StopFieldError, ExplicitError, StreamError
 
 __all__ = ["FourCC"]
@@ -29,23 +29,105 @@ def _ascii(s):
             s2 += chr(c)
     return s2
 
-def chexdump(s, st=0, abbreviate=True, indent="", print_fn=print):
+def chexdump(s, st=0, abbreviate=True, stride=16, indent="", print_fn=print):
     last = None
     skip = False
-    for i in range(0,len(s),16):
-        val = s[i:i+16]
+    for i in range(0,len(s),stride):
+        val = s[i:i+stride]
         if val == last and abbreviate:
             if not skip:
                 print_fn(indent+"%08x  *" % (i + st))
                 skip = True
         else:
-            print_fn(indent+"%08x  %s  %s  |%s|" % (
-                  i + st,
-                  hexdump(val[:8], ' ').ljust(23),
-                  hexdump(val[8:], ' ').ljust(23),
-                  _ascii(val).ljust(16)))
+            print_fn(indent+"%08x  %s  |%s|" % (
+                i + st,
+                "  ".join(hexdump(val[i:i+8], ' ').ljust(23)
+                          for i in range(0, stride, 8)),
+                _ascii(val).ljust(stride)))
             last = val
             skip = False
+
+def chexdiff32(prev, cur, ascii=True, offset=0, offset2=None):
+    assert len(cur) % 4 == 0
+    count = len(cur) // 4
+    words = struct.unpack("<%dI" % count, cur)
+
+    if prev is None:
+        last = None
+    else:
+        assert len(prev) == len(cur)
+        last = struct.unpack("<%dI" % count, prev)
+
+    row = 8
+    skipping = False
+    out = []
+    for i in range(0, count, row):
+        off_text = f"{offset + i * 4:016x}"
+        if offset2 is not None:
+            off_text += f"/{offset2 + i * 4:08x}"
+        if not last:
+            if i != 0 and words[i:i+row] == words[i-row:i]:
+                if not skipping:
+                    out.append(f"{off_text} *\n")
+                skipping = True
+            else:
+                out.append(f"{off_text} ")
+                for new in words[i:i+row]:
+                    out.append("%08x " % new)
+                if ascii:
+                    out.append("| " + _ascii(cur[4*i:4*(i+row)]))
+                out.append("\n")
+                skipping = False
+        elif last[i:i+row] != words[i:i+row]:
+            out.append(f"{off_text} ")
+            for old, new in zip(last[i:i+row], words[i:i+row]):
+                so = "%08x" % old
+                sn = s = "%08x" % new
+                if old != new:
+                    s = "\x1b[32m"
+                    ld = False
+                    for a,b in zip(so, sn):
+                        d = a != b
+                        if ld != d:
+                            s += "\x1b[31;1;4m" if d else "\x1b[32m"
+                            ld = d
+                        s += b
+                    s += "\x1b[m"
+                out.append(s + " ")
+            if ascii:
+                out.append("| " + _ascii(cur[4*i:4*(i+row)]))
+            out.append("\n")
+    return "".join(out)
+
+def chexundump(dump, base=0):
+    if type(dump) is bytes:
+        dump = dump.decode("ascii")
+    elif type(dump) is str:
+        pass
+    else:
+        dump = dump.read()
+
+    decoded = bytearray()
+    for line in dump.splitlines():
+        if not line:
+            continue
+        try:
+            cropped = line.split("|", 2)[0]
+            mark, data = cropped.split(" ", 1)
+            if data.strip() == "*":
+                continue
+            offset = int(mark, 16)
+            data = data.replace(" ", "")
+            if len(data) % 2 != 0:
+                raise ValueError("odd sized data")
+            if offset > len(decoded):
+                decoded.extend([0] * (offset - len(decoded) - base))
+            decoded.extend([int(data[i:i+2], 16) for i \
+                            in range(0, len(data), 2)])
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"can't decode line: {line:r}") from exc
+
+    return decoded
 
 _extascii_table_low = [
     "▪", "☺", "☻", "♥", "♦", "♣", "♠", "•",
@@ -121,6 +203,21 @@ def unhex(s):
     s = re.sub(r"/\*.*?\*/", "", s)
     return bytes.fromhex(s.replace(" ", "").replace("\n", ""))
 
+def dumpstacks(signal, frame):
+    id2name = dict([(th.ident, th.name) for th in threading.enumerate()])
+    code = []
+    for threadId, stack in sys._current_frames().items():
+        code.append("\n# Thread: %s(%d)" % (id2name.get(threadId,""), threadId))
+        for filename, lineno, name, line in traceback.extract_stack(stack):
+            code.append('File: "%s", line %d, in %s' % (filename, lineno, name))
+            if line:
+                code.append("  %s" % (line.strip()))
+    print("\n".join(code))
+    sys.exit(1)
+
+def set_sigquit_stackdump_handler():
+    signal.signal(signal.SIGQUIT, dumpstacks)
+
 def parse_indexlist(s):
     items = set()
     for i in s.split(","):
@@ -162,7 +259,7 @@ class ReloadableMeta(type):
 
 class Reloadable(metaclass=ReloadableMeta):
     @classmethod
-    def _reloadcls(cls):
+    def _reloadcls(cls, force=False):
         mods = []
         for c in cls.mro():
             mod = sys.modules[c.__module__]
@@ -178,7 +275,7 @@ class Reloadable(metaclass=ReloadableMeta):
             if not source:
                 continue
             newest = max(newest, os.stat(source).st_mtime, pcls._load_time)
-            if (reloaded or pcls._load_time < newest) and mod.__name__ not in reloaded:
+            if (force or reloaded or pcls._load_time < newest) and mod.__name__ not in reloaded:
                 print(f"Reload: {mod.__name__}")
                 mod = importlib.reload(mod)
                 reloaded.add(mod.__name__)
@@ -218,6 +315,7 @@ class RegisterMeta(ReloadableMeta):
         return m
 
 class Register(Reloadable, metaclass=RegisterMeta):
+    _Constant = Constant
     def __init__(self, v=None, **kwargs):
         if v is not None:
             self._value = v
@@ -227,7 +325,7 @@ class Register(Reloadable, metaclass=RegisterMeta):
             self._value = 0
             for k in self._fields_list:
                 field = getattr(self.__class__, k)
-                if isinstance(field, tuple) and len(field) >= 3 and isinstance(field[2], Constant):
+                if isinstance(field, tuple) and len(field) >= 3 and isinstance(field[2], self._Constant):
                     setattr(self, k, field[2].value)
 
         for k,v in kwargs.items():
@@ -361,6 +459,13 @@ class RangeMap(Reloadable):
         self.__start = []
         self.__end = []
         self.__value = []
+
+    def clone(self):
+        r = type(self)()
+        r.__start = list(self.__start)
+        r.__end = list(self.__end)
+        r.__value = [copy.copy(i) for i in self.__value]
+        return r
 
     def __len__(self):
         return len(self.__start)
@@ -694,9 +799,14 @@ class NdRange:
 class RegMapMeta(ReloadableMeta):
     def __new__(cls, name, bases, dct):
         m = super().__new__(cls, name, bases, dct)
-        m._addrmap = {}
-        m._rngmap = SetRangeMap()
-        m._namemap = {}
+        if getattr(m, "_addrmap", None) is None:
+            m._addrmap = {}
+            m._rngmap = SetRangeMap()
+            m._namemap = {}
+        else:
+            m._addrmap = dict(m._addrmap)
+            m._rngmap = m._rngmap.clone()
+            m._namemap = dict(m._namemap)
 
         for k, v in dct.items():
             if k.startswith("_") or not isinstance(v, tuple):
@@ -775,7 +885,7 @@ class RegArrayAccessor(Reloadable):
         else:
             return [RegAccessor(self.cls, self.rd, self.wr, self.addr + i) for i in off]
 
-class RegMap(Reloadable, metaclass=RegMapMeta):
+class BaseRegMap(Reloadable):
     def __init__(self, backend, base):
         self._base = base
         self._backend = backend
@@ -785,13 +895,12 @@ class RegMap(Reloadable, metaclass=RegMapMeta):
             width = rcls.__WIDTH__
             rd = functools.partial(backend.read, width=width)
             wr = functools.partial(backend.write, width=width)
-            if isinstance(addr, NdRange):
+            if type(addr).__name__ == "NdRange":
                 self._accessor[name] = RegArrayAccessor(addr, rcls, rd, wr, base)
             else:
                 self._accessor[name] = RegAccessor(rcls, rd, wr, base + addr)
 
-    @classmethod
-    def lookup_offset(cls, offset):
+    def _lookup_offset(cls, offset):
         reg = cls._addrmap.get(offset, None)
         if reg is not None:
             name, rcls = reg
@@ -802,6 +911,7 @@ class RegMap(Reloadable, metaclass=RegMapMeta):
                 if offset in rng:
                     return name, rng.index(offset), rcls
         return None, None, None
+    lookup_offset = classmethod(_lookup_offset)
 
     def lookup_addr(self, addr):
         return self.lookup_offset(addr - self._base)
@@ -813,9 +923,9 @@ class RegMap(Reloadable, metaclass=RegMapMeta):
         else:
             return name
 
-    @classmethod
-    def lookup_name(cls, name):
+    def _lookup_name(cls, name):
         return cls._namemap.get(name, None)
+    lookup_name = classmethod(_lookup_name)
 
     def _scalar_regs(self):
         for addr, (name, rtype) in self._addrmap.items():
@@ -839,6 +949,9 @@ class RegMap(Reloadable, metaclass=RegMapMeta):
     def dump_regs(self):
         for addr, name, acc, rtype in heapq.merge(sorted(self._scalar_regs()), self._array_regs()):
             print(f"{self._base:#x}+{addr:06x} {name} = {acc.reg}")
+
+class RegMap(BaseRegMap, metaclass=RegMapMeta):
+    pass
 
 def irange(start, count, step=1):
     return range(start, start + count * step, step)

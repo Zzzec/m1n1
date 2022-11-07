@@ -1,63 +1,20 @@
 # SPDX-License-Identifier: MIT
-import sys, traceback, struct, array, bisect, os, signal, runpy
+import io, sys, traceback, struct, array, bisect, os, plistlib, signal, runpy
 from construct import *
-from enum import Enum, IntEnum, IntFlag
 
-from .asm import ARMAsm
-from .tgtypes import *
-from .proxy import IODEV, START, EVENT, EXC, EXC_RET, ExcInfo
-from .utils import *
-from .sysreg import *
-from .macho import MachO
-from .adt import load_adt
-from . import xnutools, shell
+from ..asm import ARMAsm
+from ..tgtypes import *
+from ..proxy import IODEV, START, EVENT, EXC, EXC_RET, ExcInfo
+from ..utils import *
+from ..sysreg import *
+from ..macho import MachO
+from ..adt import load_adt
+from .. import xnutools, shell
+
+from .gdbserver import *
+from .types import *
 
 __all__ = ["HV"]
-
-class MMIOTraceFlags(Register32):
-    CPU = 23, 16
-    WIDTH = 4, 0
-    WRITE = 5
-    MULTI = 6
-
-EvtMMIOTrace = Struct(
-    "flags" / RegAdapter(MMIOTraceFlags),
-    "reserved" / Int32ul,
-    "pc" / Hex(Int64ul),
-    "addr" / Hex(Int64ul),
-    "data" / Hex(Int64ul),
-)
-
-EvtIRQTrace = Struct(
-    "flags" / Int32ul,
-    "type" / Hex(Int16ul),
-    "num" / Int16ul,
-)
-
-class HV_EVENT(IntEnum):
-    HOOK_VM = 1
-    VTIMER = 2
-    USER_INTERRUPT = 3
-    WDT_BARK = 4
-
-VMProxyHookData = Struct(
-    "flags" / RegAdapter(MMIOTraceFlags),
-    "id" / Int32ul,
-    "addr" / Hex(Int64ul),
-    "data" / Array(2, Hex(Int64ul)),
-)
-
-class TraceMode(IntEnum):
-    '''
-Different types of Tracing '''
-
-    OFF = 0
-    ASYNC = 1
-    UNBUF = 2
-    WSYNC = 3
-    SYNC = 4
-    HOOK = 5
-    RESERVED = 6
 
 class HV(Reloadable):
     PAC_MASK = 0xfffff00000000000
@@ -124,8 +81,10 @@ class HV(Reloadable):
         self.vbar_el1 = None
         self.want_vbar = None
         self.vectors = [None]
-        self._stepping = False
         self._bps = [None, None, None, None, None]
+        self._bp_hooks = dict()
+        self._wps = [None, None, None, None]
+        self._wpcs = [0, 0, 0, 0]
         self.sym_offset = 0
         self.symbols = []
         self.symbol_dict = {}
@@ -133,6 +92,8 @@ class HV(Reloadable):
         self.novm = False
         self._in_handler = False
         self._sigint_pending = False
+        self._in_shell = False
+        self._gdbserver = None
         self.vm_hooks = [None]
         self.interrupt_map = {}
         self.mmio_maps = DictRangeMap()
@@ -147,6 +108,9 @@ class HV(Reloadable):
         self.started_cpus = set()
         self.started = False
         self.ctx = None
+        self.hvcall_handlers = {}
+        self.switching_context = False
+        self.show_timestamps = False
 
     def _reloadme(self):
         super()._reloadme()
@@ -167,11 +131,16 @@ class HV(Reloadable):
             if callable(a):
                 self.shell_locals[attr] = getattr(self, attr)
 
+        self.shell_locals["ctx"] = self.context
+
     def log(self, s, *args, show_cpu=True, **kwargs):
         if self.ctx is not None and show_cpu:
-            print(f"[cpu{self.ctx.cpu_id}] " + s, *args, **kwargs)
+            ts=""
+            if self.show_timestamps:
+                ts = f"[{self.u.mrs(CNTPCT_EL0):#x}]"
+            print(ts+f"[cpu{self.ctx.cpu_id}] " + s, *args, **kwargs)
             if self.print_tracer.log_file:
-                print(f"# [cpu{self.ctx.cpu_id}] " + s, *args, file=self.print_tracer.log_file, **kwargs)
+                print(f"# {ts}[cpu{self.ctx.cpu_id}] " + s, *args, file=self.print_tracer.log_file, **kwargs)
         else:
             print(s, *args, **kwargs)
             if self.print_tracer.log_file:
@@ -226,6 +195,45 @@ class HV(Reloadable):
 
         assert self.p.hv_map(ipa, (index << 2) | flags | t, size, 0) >= 0
 
+    def readmem(self, va, size):
+        '''read from virtual memory'''
+        with io.BytesIO() as buffer:
+            while size > 0:
+                pa = self.p.hv_translate(va, False, False)
+                if pa == 0:
+                    break
+
+                size_in_page = 4096 - (va % 4096)
+                if size < size_in_page:
+                    buffer.write(self.iface.readmem(pa, size))
+                    break
+
+                buffer.write(self.iface.readmem(pa, size_in_page))
+                va += size_in_page
+                size -= size_in_page
+
+            return buffer.getvalue()
+
+    def writemem(self, va, data):
+        '''write to virtual memory'''
+        written = 0
+        while written < len(data):
+            pa = self.p.hv_translate(va, False, True)
+            if pa == 0:
+                break
+
+            size_in_page = 4096 - (va % 4096)
+            if len(data) - written < size_in_page:
+                self.iface.writemem(pa, data[written:])
+                written = len(data)
+                break
+
+            self.iface.writemem(pa, data[written:written + size_in_page])
+            va += size_in_page
+            written += size_in_page
+
+        return written
+
     def trace_irq(self, device, num, count, flags):
         for n in range(num, num + count):
             if flags & self.IRQTRACE_IRQ:
@@ -243,7 +251,7 @@ class HV(Reloadable):
         assert self.p.hv_trace_irq(self.AIC_EVT_TYPE_HW, num, count, flags) > 0
 
     def add_tracer(self, zone, ident, mode=TraceMode.ASYNC, read=None, write=None, **kwargs):
-        assert mode in (TraceMode.RESERVED, TraceMode.OFF) or read or write
+        assert mode in (TraceMode.RESERVED, TraceMode.OFF, TraceMode.BYPASS) or read or write
         self.mmio_maps[zone, ident] = (mode, ident, read, write, kwargs)
         self.dirty_maps.set(zone)
 
@@ -265,13 +273,15 @@ class HV(Reloadable):
             addr, size = node.get_reg(index)
             self.trace_range(irange(addr, size), mode)
 
-    def trace_range(self, zone, mode=TraceMode.ASYNC, read=True, write=True):
+    def trace_range(self, zone, mode=TraceMode.ASYNC, read=True, write=True, name=None):
         if mode is True:
             mode = TraceMode.ASYNC
         if mode and mode != TraceMode.OFF:
             self.add_tracer(zone, "PrintTracer", mode,
                             self.print_tracer.event_mmio if read else None,
-                            self.print_tracer.event_mmio if write else None)
+                            self.print_tracer.event_mmio if write else None,
+                            start=zone.start,
+                            name=name)
         else:
             self.del_tracer(zone, "PrintTracer")
 
@@ -287,9 +297,15 @@ class HV(Reloadable):
         for zone in self.dirty_maps:
             if zone.stop <= top:
                 continue
+            top = max(top, zone.start)
+
             for mzone, maps in self.mmio_maps.overlaps(zone):
                 if mzone.stop <= top:
                     continue
+                if top < mzone.start:
+                    self.unmap(top, mzone.start - top)
+                    self.log(f"PT[{top:09x}:{mzone.start:09x}] -> *UNMAPPED*")
+
                 top = mzone.stop
                 if not maps:
                     continue
@@ -300,7 +316,7 @@ class HV(Reloadable):
                 need_write = any(m[3] for m in maps)
 
                 if mode == TraceMode.RESERVED:
-                    print(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> RESERVED {ident}")
+                    self.log(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> RESERVED {ident}")
                     continue
                 elif mode in (TraceMode.HOOK, TraceMode.SYNC):
                     self.map_hook_idx(mzone.start, mzone.stop - mzone.start, 0,
@@ -308,12 +324,12 @@ class HV(Reloadable):
                     if mode == TraceMode.HOOK:
                         for m2, i2, r2, w2, k2 in maps[1:]:
                             if m2 == TraceMode.HOOK:
-                                print(f"!! Conflict: HOOK {i2}")
+                                self.log(f"!! Conflict: HOOK {i2}")
                 elif mode == TraceMode.WSYNC:
                     flags = self.SPTE_TRACE_READ if need_read else 0
                     self.map_hook_idx(mzone.start, mzone.stop - mzone.start, 0,
                                       False, need_write, flags=flags)
-                elif mode in (TraceMode.UNBUF, TraceMode.ASYNC):
+                elif mode in (TraceMode.UNBUF, TraceMode.ASYNC, TraceMode.BYPASS):
                     pa = mzone.start
                     if mode == TraceMode.UNBUF:
                         pa |= self.SPTE_TRACE_UNBUF
@@ -324,7 +340,7 @@ class HV(Reloadable):
                     self.map_sw(mzone.start, pa, mzone.stop - mzone.start)
                 elif mode == TraceMode.OFF:
                     self.map_hw(mzone.start, mzone.start, mzone.stop - mzone.start)
-                    print(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> HW")
+                    self.log(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> HW:{ident}")
                     continue
 
                 rest = [m[1] for m in maps[1:] if m[0] != TraceMode.OFF]
@@ -333,7 +349,11 @@ class HV(Reloadable):
                 else:
                     rest = ""
 
-                print(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> {mode.name}.{'R' if read else ''}{'W' if read else ''} {ident}{rest}")
+                self.log(f"PT[{mzone.start:09x}:{mzone.stop:09x}] -> {mode.name}.{'R' if read else ''}{'W' if read else ''} {ident}{rest}")
+
+            if top < zone.stop:
+                self.unmap(top, zone.stop - top)
+                self.log(f"PT[{top:09x}:{zone.stop:09x}] -> *UNMAPPED*")
 
         self.u.inst(0xd50c83df) # tlbi vmalls12e1is
         self.dirty_maps.clear()
@@ -355,9 +375,12 @@ class HV(Reloadable):
 
             self.shell_locals["skip"] = lambda: do_exit(1)
             self.shell_locals["cont"] = lambda: do_exit(0)
-            ret = shell.run_shell(self.shell_locals, "Entering debug shell", "Returning to tracer")
+            ret = self.run_shell("Entering debug shell", "Returning to tracer")
             self.shell_locals["skip"] = self.skip
             self.shell_locals["cont"] = self.cont
+
+            if self.ctx:
+                self.cpu() # Return to the original CPU to avoid confusing things
 
             if ret == 1:
                 if needs_ret:
@@ -369,7 +392,44 @@ class HV(Reloadable):
                 update()
 
     def run_shell(self, entry_msg="Entering shell", exit_msg="Continuing"):
-        return shell.run_shell(self.shell_locals, entry_msg, exit_msg)
+        def handle_sigusr1(signal, stack):
+            raise shell.ExitConsole(EXC_RET.HANDLED)
+
+        def handle_sigusr2(signal, stack):
+            raise shell.ExitConsole(EXC_RET.EXIT_GUEST)
+
+        default_sigusr1 = signal.signal(signal.SIGUSR1, handle_sigusr1)
+        try:
+            default_sigusr2 = signal.signal(signal.SIGUSR2, handle_sigusr2)
+            try:
+                self._in_shell = True
+                try:
+                    if not self._gdbserver is None:
+                        self._gdbserver.notify_in_shell()
+                    return shell.run_shell(self.shell_locals, entry_msg, exit_msg)
+                finally:
+                    self._in_shell = False
+            finally:
+                signal.signal(signal.SIGUSR2, default_sigusr2)
+        finally:
+            signal.signal(signal.SIGUSR1, default_sigusr1)
+
+    @property
+    def in_shell(self):
+        return self._in_shell
+
+    def gdbserver(self, address="/tmp/.m1n1-unix", log=None):
+        '''activate gdbserver'''
+        if not self._gdbserver is None:
+            raise Exception("gdbserver is already running")
+
+        self._gdbserver = GDBServer(self, address, log)
+        self._gdbserver.activate()
+
+    def shutdown_gdbserver(self):
+        '''shutdown gdbserver'''
+        self._gdbserver.shutdown()
+        self._gdbserver = None
 
     def handle_mmiotrace(self, data):
         evt = EvtMMIOTrace.parse(data)
@@ -562,6 +622,13 @@ class HV(Reloadable):
 
         return self.symbols[idx]
 
+    def get_sym(self, addr):
+        a, name = self.sym(addr)
+        if addr == a:
+            return name
+        else:
+            return None
+
     def handle_msr(self, ctx, iss=None):
         if iss is None:
             iss = ctx.esr.ISS
@@ -578,11 +645,19 @@ class HV(Reloadable):
             VMSA_LOCK_EL1,
             #SPRR_UNK1_EL1,
             #SPRR_UNK2_EL1,
+            MDSCR_EL1,
         }
         ro = {
             ACC_CFG_EL1,
             ACC_OVRD_EL1,
         }
+        for i in range(len(self._bps)):
+            shadow.add(DBGBCRn_EL1(i))
+            shadow.add(DBGBVRn_EL1(i))
+        for i in range(len(self._wps)):
+            shadow.add(DBGWCRn_EL1(i))
+            shadow.add(DBGWVRn_EL1(i))
+
         value = 0
         if enc in shadow:
             if iss.DIR == MSR_DIR.READ:
@@ -673,7 +748,7 @@ class HV(Reloadable):
             if far is not None:
                 self.log(f"     FAR={self.addr(far)}")
             if elr_phys:
-                self.u.disassemble_at(elr_phys - 4 * 4, 9 * 4, elr_phys)
+                self.u.disassemble_at(elr_phys - 4 * 4, 9 * 4, elr - 4 * 4, elr, sym=self.get_sym)
             if self.sym(elr)[1] == "com.apple.kernel:_panic_trap_to_debugger":
                 self.log("Panic! Trying to decode panic...")
                 try:
@@ -717,9 +792,11 @@ class HV(Reloadable):
                 continue
             self.u.msr(DBGBCRn_EL1(i), DBGBCR(E=1, PMC=0b11, BAS=0xf).value)
 
-        if not self._stepping:
-            return True
-        self._stepping = False
+        # enable all watchpoints again
+        for i, wpc in enumerate(self._wpcs):
+            self.u.msr(DBGWCRn_EL1(i), wpc)
+
+        return True
 
     def handle_break(self, ctx):
         # disable all breakpoints so that we don't get stuck
@@ -729,6 +806,74 @@ class HV(Reloadable):
         # we'll need to single step to enable these breakpoints again
         self.u.msr(MDSCR_EL1, MDSCR(SS=1, MDE=1).value)
         self.ctx.spsr.SS = 1
+
+        if ctx.elr in self._bp_hooks:
+            if self._bp_hooks[ctx.elr](ctx):
+                return True
+
+    def handle_watch(self, ctx):
+        # disable all watchpoints so that we don't get stuck
+        for i in range(len(self._wps)):
+            self.u.msr(DBGWCRn_EL1(i), 0)
+
+        # we'll need to single step to enable these watchpoints again
+        self.u.msr(MDSCR_EL1, MDSCR(SS=1, MDE=1).value)
+        self.ctx.spsr.SS = 1
+
+    def add_hvcall(self, callid, handler):
+        self.hvcall_handlers[callid] = handler
+
+    def handle_brk(self, ctx):
+        iss = ctx.esr.ISS
+        if iss != 0x4242:
+            return self._lower()
+
+        # HV call from EL0/1
+        callid = ctx.regs[0]
+        handler = self.hvcall_handlers.get(callid, None)
+        if handler is None:
+            self.log(f"Undefined HV call #{callid}")
+            return False
+
+        ok = handler(ctx)
+        if ok:
+            ctx.elr += 4
+        return ok
+
+    def handle_dabort(self, ctx):
+        insn = self.p.read32(ctx.elr_phys)
+        far_phys = self.p.hv_translate(ctx.far, True, False)
+
+        if insn & 0x3b200c00 == 0x38200000:
+            page = far_phys & ~0x3fff
+
+            before = self.p.read32(far_phys)
+            self.map_hw(page, page, 0x4000)
+            r0b = self.ctx.regs[0]
+            self.log(f"-ELR={self.ctx.elr:#x} LR={self.ctx.regs[30]:#x}")
+            self.step()
+            self.log(f"+ELR={self.ctx.elr:#x}")
+            r0a = self.ctx.regs[0]
+            self.dirty_maps.set(irange(page, 0x4000))
+            self.pt_update()
+            after = self.p.read32(far_phys)
+            self.log(f"Unhandled atomic: @{far_phys:#x} {before:#x} -> {after:#x} | r0={r0b:#x} -> {r0a:#x}")
+            return True
+
+        if insn & 0x3f000000 == 0x08000000:
+            page = far_phys & ~0x3fff
+            before = self.p.read32(far_phys)
+            self.map_hw(page, page, 0x4000)
+            r0b = self.ctx.regs[0]
+            self.log(f"-ELR={self.ctx.elr:#x} LR={self.ctx.regs[30]:#x}")
+            self.step()
+            self.log(f"+ELR={self.ctx.elr:#x}")
+            r0a = self.ctx.regs[0]
+            self.dirty_maps.set(irange(page, 0x4000))
+            self.pt_update()
+            after = self.p.read32(far_phys)
+            self.log(f"Unhandled exclusive: @{far_phys:#x} {before:#x} -> {after:#x} | r0={r0b:#x} -> {r0a:#x}")
+            return True
 
     def handle_sync(self, ctx):
         if ctx.esr.EC == ESR_EC.MSR:
@@ -746,16 +891,45 @@ class HV(Reloadable):
         if ctx.esr.EC == ESR_EC.BKPT_LOWER:
             return self.handle_break(ctx)
 
+        if ctx.esr.EC == ESR_EC.WATCH_LOWER:
+            return self.handle_watch(ctx)
+
         if ctx.esr.EC == ESR_EC.BRK:
-            return self._lower()
+            return self.handle_brk(ctx)
+
+        if ctx.esr.EC == ESR_EC.DABORT_LOWER:
+            return self.handle_dabort(ctx)
+
+    def _load_context(self):
+        self._info_data = self.iface.readmem(self.exc_info, ExcInfo.sizeof())
+        self.ctx = ExcInfo.parse(self._info_data)
+        return self.ctx
+
+    def _commit_context(self):
+        new_info = ExcInfo.build(self.ctx)
+        if new_info != self._info_data:
+            self.iface.writemem(self.exc_info, new_info)
+            self._info_data = new_info
 
     def handle_exception(self, reason, code, info):
+        self.exc_info = info
+        self.exc_reason = reason
+        if reason in (START.EXCEPTION_LOWER, START.EXCEPTION):
+            code = EXC(code)
+        elif reason == START.HV:
+            code = HV_EVENT(code)
+        self.exc_code = code
+        self.is_fault = reason == START.EXCEPTION_LOWER and code in (EXC.SYNC, EXC.SERROR)
+
+        # Nested context switch is handled by the caller
+        if self.switching_context:
+            self.switching_context = False
+            return
+
         self._in_handler = True
 
-        info_data = self.iface.readmem(info, ExcInfo.sizeof())
-        self.exc_reason = reason
-        self.exc_code = code
-        self.ctx = ctx = ExcInfo.parse(info_data)
+        ctx = self._load_context()
+        self.exc_orig_cpu = self.ctx.cpu_id
 
         handled = False
         user_interrupt = False
@@ -766,7 +940,7 @@ class HV(Reloadable):
                     handled = self.handle_sync(ctx)
                 elif code == EXC.FIQ:
                     self.u.msr(CNTV_CTL_EL0, 0)
-                    self.u.print_exception(code, ctx)
+                    self.u.print_context(ctx, False, sym=self.get_sym)
                     handled = True
             elif reason == START.HV:
                 code = HV_EVENT(code)
@@ -787,13 +961,13 @@ class HV(Reloadable):
         else:
             self.log(f"Guest exception: {reason.name}/{code.name}")
             self.update_pac_mask()
-            self.u.print_exception(code, ctx)
+            self.u.print_context(ctx, self.is_fault, sym=self.get_sym)
 
         if self._sigint_pending or not handled or user_interrupt:
             self._sigint_pending = False
 
             signal.signal(signal.SIGINT, self.default_sigint)
-            ret = shell.run_shell(self.shell_locals, "Entering hypervisor shell", "Returning from exception")
+            ret = self.run_shell("Entering hypervisor shell", "Returning from exception")
             signal.signal(signal.SIGINT, self._handle_sigint)
 
             if ret is None:
@@ -801,11 +975,9 @@ class HV(Reloadable):
 
         self.pt_update()
 
-        new_info = ExcInfo.build(self.ctx)
-        if new_info != info_data:
-            self.iface.writemem(info, new_info)
-
+        self._commit_context()
         self.ctx = None
+        self.exc_orig_cpu = None
         self.p.exit(ret)
 
         self._in_handler = False
@@ -817,19 +989,23 @@ class HV(Reloadable):
         self._sigint_pending = False
 
         signal.signal(signal.SIGINT, self.default_sigint)
-        ret = shell.run_shell(self.shell_locals, "Entering panic shell", "Exiting")
+        ret = self.run_shell("Entering panic shell", "Exiting")
         signal.signal(signal.SIGINT, self._handle_sigint)
 
         self.p.exit(0)
 
     def skip(self):
         self.ctx.elr += 4
-        raise shell.ExitConsole(EXC_RET.HANDLED)
+        self.cont()
 
     def cont(self):
-        raise shell.ExitConsole(EXC_RET.HANDLED)
+        os.kill(os.getpid(), signal.SIGUSR1)
 
     def _lower(self):
+        if not self.is_fault:
+            print("Cannot lower non-fault exception")
+            return False
+
         self.u.msr(ELR_EL12, self.ctx.elr)
         self.u.msr(SPSR_EL12, self.ctx.spsr.value)
         self.u.msr(ESR_EL12, self.ctx.esr.value)
@@ -857,46 +1033,125 @@ class HV(Reloadable):
         return True
 
     def lower(self, step=False):
+        self.cpu() # Return to exception CPU
+
         if not self._lower():
             return
         elif step:
             self.step()
         else:
-            raise shell.ExitConsole(EXC_RET.HANDLED)
+            self.cont()
 
     def step(self):
         self.u.msr(MDSCR_EL1, MDSCR(SS=1, MDE=1).value)
         self.ctx.spsr.SS = 1
-        self._stepping = True
-        raise shell.ExitConsole(EXC_RET.HANDLED)
+        self.p.hv_pin_cpu(self.ctx.cpu_id)
+        self._switch_context()
+        self.p.hv_pin_cpu(0xffffffffffffffff)
 
-    def cpu(self, cpu):
-        self.p.hv_switch_cpu(cpu)
-        raise shell.ExitConsole(EXC_RET.HANDLED)
+    def _switch_context(self, exit=EXC_RET.HANDLED):
+        # Flush current CPU context out to HV
+        self._commit_context()
+        self.exc_info = None
+        self.ctx = None
 
-    def add_hw_bp(self, vaddr):
-        for i, i_vaddr in enumerate(self._bps):
-            if i_vaddr is None:
+        self.switching_context = True
+        # Exit out of the proxy
+        self.p.exit(exit)
+        # Wait for next proxy entry
+        self.iface.wait_and_handle_boot()
+        if self.switching_context:
+            raise Exception(f"Failed to switch context")
+
+        # Fetch new context
+        self._load_context()
+
+    def cpu(self, cpu=None):
+        if cpu is None:
+            cpu = self.exc_orig_cpu
+        if cpu == self.ctx.cpu_id:
+            return
+
+        if not self.p.hv_switch_cpu(cpu):
+            raise ValueError(f"Invalid or inactive CPU #{cpu}")
+
+        self._switch_context()
+        if self.ctx.cpu_id != cpu:
+            raise Exception(f"Switching to CPU #{cpu} but ended on #{self.ctx.cpu_id}")
+
+    def add_hw_bp(self, vaddr, hook=None):
+        if None not in self._bps:
+            raise ValueError("Cannot add more HW breakpoints")
+
+        i = self._bps.index(None)
+        cpu_id = self.ctx.cpu_id
+        try:
+            for cpu in self.cpus():
                 self.u.msr(DBGBCRn_EL1(i), DBGBCR(E=1, PMC=0b11, BAS=0xf).value)
                 self.u.msr(DBGBVRn_EL1(i), vaddr)
-                self._bps[i] = vaddr
-                return
-        raise ValueError("Cannot add more HW breakpoints")
+        finally:
+            self.cpu(cpu_id)
+        self._bps[i] = vaddr
+        if hook is not None:
+            self._bp_hooks[vaddr] = hook
 
     def remove_hw_bp(self, vaddr):
         idx = self._bps.index(vaddr)
         self._bps[idx] = None
-        self.u.msr(DBGBCRn_EL1(idx), 0)
-        self.u.msr(DBGBVRn_EL1(idx), 0)
+        cpu_id = self.ctx.cpu_id
+        try:
+            for cpu in self.cpus():
+                self.u.msr(DBGBCRn_EL1(idx), 0)
+                self.u.msr(DBGBVRn_EL1(idx), 0)
+        finally:
+            self.cpu(cpu_id)
+        if vaddr in self._bp_hooks:
+            del self._bp_hooks[vaddr]
 
-    def add_sym_bp(self, name):
-        return self.add_hw_bp(self.resolve_symbol(name))
+    def add_sym_bp(self, name, hook=None):
+        return self.add_hw_bp(self.resolve_symbol(name), hook=hook)
 
     def remove_sym_bp(self, name):
         return self.remove_hw_bp(self.resolve_symbol(name))
 
+    def clear_hw_bps(self):
+        for vaddr in self._bps:
+            self.remove_hw_bp(vaddr)
+
+    def add_hw_wp(self, vaddr, bas, lsc):
+        for i, i_vaddr in enumerate(self._wps):
+            if i_vaddr is None:
+                self._wps[i] = vaddr
+                self._wpcs[i] = DBGWCR(E=1, PAC=0b11, BAS=bas, LSC=lsc).value
+                cpu_id = self.ctx.cpu_id
+                try:
+                    for cpu in self.cpus():
+                        self.u.msr(DBGWCRn_EL1(i), self._wpcs[i])
+                        self.u.msr(DBGWVRn_EL1(i), vaddr)
+                finally:
+                    self.cpu(cpu_id)
+                return
+        raise ValueError("Cannot add more HW watchpoints")
+
+    def get_wp_bas(self, vaddr):
+        for i, i_vaddr in enumerate(self._wps):
+            if i_vaddr == vaddr:
+                return self._wpcs[i].BAS
+
+    def remove_hw_wp(self, vaddr):
+        idx = self._wps.index(vaddr)
+        self._wps[idx] = None
+        self._wpcs[idx] = 0
+        cpu_id = self.ctx.cpu_id
+        try:
+            for cpu in self.cpus():
+                self.u.msr(DBGWCRn_EL1(idx), 0)
+                self.u.msr(DBGWVRn_EL1(idx), 0)
+        finally:
+            self.cpu(cpu_id)
+
     def exit(self):
-        raise shell.ExitConsole(EXC_RET.EXIT_GUEST)
+        os.kill(os.getpid(), signal.SIGUSR2)
 
     def reboot(self):
         print("Hard rebooting the system")
@@ -912,6 +1167,12 @@ class HV(Reloadable):
 
     def decode_panic_call(self):
         xnutools.decode_panic_call(self.u, self.ctx)
+
+    def context(self):
+        f = f" (orig: #{self.exc_orig_cpu})" if self.ctx.cpu_id != self.exc_orig_cpu else ""
+        print(f"  == On CPU #{self.ctx.cpu_id}{f} ==")
+        print(f"  Reason: {self.exc_reason.name}/{self.exc_code.name}")
+        self.u.print_context(self.ctx, self.is_fault, sym=self.get_sym)
 
     def bt(self, frame=None, lr=None):
         if frame is None:
@@ -933,6 +1194,11 @@ class HV(Reloadable):
                 break
             lr = self.unpac(self.p.read64(lrp))
             frame = self.p.read64(fpp)
+
+    def cpus(self):
+        for i in sorted(self.started_cpus):
+            self.cpu(i)
+            yield i
 
     def patch_exception_handling(self):
         if self.ctx.cpu_id != 0:
@@ -1027,6 +1293,7 @@ class HV(Reloadable):
         self.iface.set_handler(START.HV, HV_EVENT.HOOK_VM, self.handle_exception)
         self.iface.set_handler(START.HV, HV_EVENT.VTIMER, self.handle_exception)
         self.iface.set_handler(START.HV, HV_EVENT.WDT_BARK, self.handle_bark)
+        self.iface.set_handler(START.HV, HV_EVENT.CPU_SWITCH, self.handle_exception)
         self.iface.set_event_handler(EVENT.MMIOTRACE, self.handle_mmiotrace)
         self.iface.set_event_handler(EVENT.IRQTRACE, self.handle_irqtrace)
 
@@ -1045,6 +1312,7 @@ class HV(Reloadable):
         hcr.TVM = 0
         hcr.FMO = 1
         hcr.IMO = 0
+        hcr.TTLBOS = 1
         self.u.msr(HCR_EL2, hcr.value)
 
         # Trap dangerous things
@@ -1156,21 +1424,32 @@ class HV(Reloadable):
             self.log(f"CPUSTART W {base:x}+{off:x}:{width} = 0x{data:x}")
             if off >= 8:
                 assert width == 32
+                die = base // 0x20_0000_0000
                 cluster = (off - 8) // 4
                 for i in range(32):
                     if data & (1 << i):
-                        self.start_secondary(cluster, i)
+                        self.start_secondary(die, cluster, i)
 
-        PMGR_CPU_START = 0x54000
-        zone = irange(pmgr0_start + PMGR_CPU_START, 0x20)
-        self.map_hook(pmgr0_start + PMGR_CPU_START, 0x20, write=cpustart_wh)
-        self.add_tracer(zone, "CPU_START", TraceMode.RESERVED)
+        die_count = self.adt["/arm-io"].die_count if hasattr(self.adt["/arm-io"], "die-count") else 1
 
-    def start_secondary(self, cluster, cpu):
-        self.log(f"Starting guest secondary {cluster}:{cpu}")
+        for die in range(0, die_count):
+            if self.u.adt["/chosen"].chip_id in (0x8103, 0x6000, 0x6001, 0x6002):
+                cpu_start = 0x54000 + die * 0x20_0000_0000
+            elif self.u.adt["/chosen"].chip_id in (0x8112,):
+                cpu_start = 0x34000 + die * 0x20_0000_0000
+            else:
+                self.log("CPUSTART unknown for this SoC!")
+                break
+
+            zone = irange(pmgr0_start + cpu_start, 0x20)
+            self.map_hook(pmgr0_start + cpu_start, 0x20, write=cpustart_wh)
+            self.add_tracer(zone, "CPU_START", TraceMode.RESERVED)
+
+    def start_secondary(self, die, cluster, cpu):
+        self.log(f"Starting guest secondary {die}:{cluster}:{cpu}")
 
         for node in list(self.adt["cpus"]):
-            if ((cluster << 8) | cpu) == node.reg:
+            if ((die << 11) | (cluster << 8) | cpu) == node.reg:
                 break
         else:
             self.log("CPU not found!")
@@ -1240,51 +1519,27 @@ class HV(Reloadable):
         print(f"Setting boot arguments to {boot_args!r}")
         self.tba.cmdline = boot_args
 
-    def load_macho(self, data, symfile=None):
-        if isinstance(data, str):
-            data = open(data, "rb")
+    def unmap_carveouts(self):
+        print(f"Unmapping TZ carveouts...")
+        carveout_p = self.p.mcc_get_carveouts()
+        while True:
+            base = self.p.read64(carveout_p)
+            size = self.p.read64(carveout_p + 8)
+            if not base:
+                break
+            print(f"  Unmap [{base:#x}..{base + size - 1:#x}]")
+            self.del_tracer(irange(base, size), "RAM-LOW")
+            self.del_tracer(irange(base, size), "RAM-HIGH")
+            carveout_p += 16
 
-        self.macho = macho = MachO(data)
-        if symfile is not None:
-            if isinstance(symfile, str):
-                symfile = open(symfile, "rb")
-            syms = MachO(symfile)
-            macho.add_symbols("com.apple.kernel", syms)
-            self.xnu_mode = True
+    def enable_time_stealing(self):
+        self.p.hv_set_time_stealing(True)
 
-        self.symbol_dict = macho.symbols
-        self.symbols = [(v, k) for k, v in macho.symbols.items()]
-        self.symbols.sort()
+    def disable_time_stealing(self):
+        self.p.hv_set_time_stealing(False)
 
-        def load_hook(data, segname, size, fileoff, dest):
-            if segname != "__TEXT_EXEC":
-                return data
 
-            print(f"Patching segment {segname}...")
-
-            a = array.array("I", data)
-
-            output = []
-
-            p = 0
-            while (p := data.find(b"\x20\x00", p)) != -1:
-                if (p & 3) != 2:
-                    p += 1
-                    continue
-
-                opcode = a[p // 4]
-                inst = self.hvc((opcode & 0xffff))
-                off = fileoff + (p & ~3)
-                if off >= 0xbfcfc0:
-                    print(f"  0x{off:x}: 0x{opcode:04x} -> hvc 0x{opcode:x} (0x{inst:x})")
-                    a[p // 4] = inst
-                p += 4
-
-            print("Done.")
-            return a.tobytes()
-
-        #image = macho.prepare_image(load_hook)
-        image = macho.prepare_image()
+    def load_raw(self, image, entryoffset=0x800, use_xnu_symbols=False, vmin=0):
         sepfw_start, sepfw_length = self.u.adt["chosen"]["memory-map"].SEPFW
         tc_start, tc_size = self.u.adt["chosen"]["memory-map"].TrustCache
         if hasattr(self.u.adt["chosen"]["memory-map"], "preoslog"):
@@ -1304,6 +1559,8 @@ class HV(Reloadable):
         print(f"Total region size: 0x{image_size:x} bytes")
 
         self.phys_base = phys_base = guest_base = self.u.heap_top
+        self.ram_base = self.phys_base & ~0xffffffff
+        self.ram_size = self.u.ba.mem_size_actual
         guest_base += 16 << 20 # ensure guest starts within a 16MB aligned region of mapped RAM
         self.adt_base = guest_base
         guest_base += align(self.u.ba.devtree_size)
@@ -1315,14 +1572,13 @@ class HV(Reloadable):
 
         print(f"Physical memory: 0x{phys_base:x} .. 0x{mem_top:x}")
         print(f"Guest region start: 0x{guest_base:x}")
-
-        self.entry = macho.entry - macho.vmin + guest_base
+        
+        self.entry = guest_base + entryoffset
 
         print(f"Mapping guest physical memory...")
-        ram_base = self.u.ba.phys_base & ~0xffffffff
-        self.map_hw(ram_base, ram_base, self.u.ba.phys_base - ram_base)
-        self.map_hw(phys_base, phys_base, self.u.ba.mem_size_actual - phys_base + ram_base)
-        self.p.mcc_hv_unmap_carveouts()
+        self.add_tracer(irange(self.ram_base, self.u.ba.phys_base - self.ram_base), "RAM-LOW", TraceMode.OFF)
+        self.add_tracer(irange(phys_base, self.u.ba.mem_size_actual - phys_base + self.ram_base), "RAM-HIGH", TraceMode.OFF)
+        self.unmap_carveouts()
 
         print(f"Loading kernel image (0x{len(image):x} bytes)...")
         self.u.compressed_writemem(guest_base, image, True)
@@ -1355,7 +1611,8 @@ class HV(Reloadable):
         self.tba.devtree = self.adt_base - phys_base + self.tba.virt_base
         self.tba.top_of_kernel_data = guest_base + image_size
 
-        self.sym_offset = macho.vmin - guest_base + self.tba.phys_base - self.tba.virt_base
+        if use_xnu_symbols == True:
+            self.sym_offset = vmin - guest_base + self.tba.phys_base - self.tba.virt_base
 
         self.iface.writemem(guest_base + self.bootargs_off, BootArgs.build(self.tba))
 
@@ -1365,6 +1622,57 @@ class HV(Reloadable):
             addr, size = cpu.cpu_impl_reg
             print(f"  {cpu.name}: [0x{addr:x}] = 0x{rvbar:x}")
             self.p.write64(addr, rvbar)
+
+    def _load_macho_symbols(self):
+        self.symbol_dict = self.macho.symbols
+        self.symbols = [(v, k) for k, v in self.macho.symbols.items()]
+        self.symbols.sort()
+
+    def load_macho(self, data, symfile=None):
+        if isinstance(data, str):
+            data = open(data, "rb")
+
+        self.macho = macho = MachO(data)
+        if symfile is not None:
+            if isinstance(symfile, str):
+                symfile = open(symfile, "rb")
+            syms = MachO(symfile)
+            macho.add_symbols("com.apple.kernel", syms)
+            self.xnu_mode = True
+
+        self._load_macho_symbols()
+
+        def load_hook(data, segname, size, fileoff, dest):
+            if segname != "__TEXT_EXEC":
+                return data
+
+            print(f"Patching segment {segname}...")
+
+            a = array.array("I", data)
+
+            output = []
+
+            p = 0
+            while (p := data.find(b"\x20\x00", p)) != -1:
+                if (p & 3) != 2:
+                    p += 1
+                    continue
+
+                opcode = a[p // 4]
+                inst = self.hvc((opcode & 0xffff))
+                off = fileoff + (p & ~3)
+                if off >= 0xbfcfc0:
+                    print(f"  0x{off:x}: 0x{opcode:04x} -> hvc 0x{opcode:x} (0x{inst:x})")
+                    a[p // 4] = inst
+                p += 4
+
+            print("Done.")
+            return a.tobytes()
+
+        #image = macho.prepare_image(load_hook)
+        image = macho.prepare_image()
+        self.load_raw(image, entryoffset=(macho.entry - macho.vmin), use_xnu_symbols=self.xnu_mode, vmin=macho.vmin)
+
 
     def update_pac_mask(self):
         tcr = TCR(self.u.mrs(TCR_EL12))
@@ -1393,9 +1701,19 @@ class HV(Reloadable):
                 self.symbol_dict[name] = addr
         self.symbols.sort()
 
+    def add_kext_symbols(self, kext, demangle=False):
+        info_plist = plistlib.load(open(f"{kext}/Contents/Info.plist", "rb"))
+        identifier = info_plist["CFBundleIdentifier"]
+        name = info_plist["CFBundleName"]
+        macho = MachO(open(f"{kext}/Contents/MacOS/{name}", "rb"))
+        self.macho.add_symbols(identifier, macho, demangle=demangle)
+        self._load_macho_symbols()
+
     def _handle_sigint(self, signal=None, stack=None):
         self._sigint_pending = True
+        self.interrupt()
 
+    def interrupt(self):
         if self._in_handler:
             return
 
@@ -1444,11 +1762,14 @@ class HV(Reloadable):
         self.iface.dev.timeout = None
         self.default_sigint = signal.signal(signal.SIGINT, self._handle_sigint)
 
+        set_sigquit_stackdump_handler()
+
         if self.wdt_cpu is not None:
             self.p.hv_wdt_start(self.wdt_cpu)
         # Does not return
 
         self.started = True
+        self.started_cpus.add(0)
         self.p.hv_start(self.entry, self.guest_base + self.bootargs_off)
 
-from . import trace
+from .. import trace

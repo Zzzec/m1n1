@@ -75,7 +75,7 @@
 enum rtkit_power_state {
     RTKIT_POWER_OFF = 0x00,
     RTKIT_POWER_SLEEP = 0x01,
-    RTKIT_POWER_HIBERNATE = 0x10,
+    RTKIT_POWER_QUIESCED = 0x10,
     RTKIT_POWER_ON = 0x20,
     RTKIT_POWER_INIT = 0x220,
 };
@@ -481,6 +481,8 @@ bool rtkit_boot(rtkit_dev_t *rtk)
 {
     struct asc_message msg;
 
+    /* boot the IOP if it isn't already */
+    asc_cpu_start(rtk->asc);
     /* can be sent unconditionally to wake up a possibly sleeping IOP */
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_IOP_PWR_STATE) |
                FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_INIT);
@@ -645,16 +647,16 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     if (rtk->crashed)
         return false;
 
-    /* AP power should always go to HIBERNATE, otherwise rebooting doesn't work */
+    /* AP power should always go to QUIESCED, otherwise rebooting doesn't work */
     msg.msg0 = FIELD_PREP(MGMT_TYPE, MGMT_MSG_AP_PWR_STATE) |
-               FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_HIBERNATE);
+               FIELD_PREP(MGMT_PWR_STATE, RTKIT_POWER_QUIESCED);
     msg.msg1 = RTKIT_EP_MGMT;
     if (!asc_send(rtk->asc, &msg)) {
         rtkit_printf("unable to send shutdown message\n");
         return false;
     }
 
-    while (rtk->ap_power != RTKIT_POWER_HIBERNATE) {
+    while (rtk->ap_power != RTKIT_POWER_QUIESCED) {
         struct rtkit_message rtk_msg;
         int ret = rtkit_recv(rtk, &rtk_msg);
 
@@ -691,12 +693,17 @@ static bool rtkit_switch_power_state(rtkit_dev_t *rtk, enum rtkit_power_state ta
     return true;
 }
 
-bool rtkit_hibernate(rtkit_dev_t *rtk)
+bool rtkit_quiesce(rtkit_dev_t *rtk)
 {
-    return rtkit_switch_power_state(rtk, RTKIT_POWER_HIBERNATE);
+    return rtkit_switch_power_state(rtk, RTKIT_POWER_QUIESCED);
 }
 
 bool rtkit_sleep(rtkit_dev_t *rtk)
 {
-    return rtkit_switch_power_state(rtk, RTKIT_POWER_SLEEP);
+    int ret = rtkit_switch_power_state(rtk, RTKIT_POWER_SLEEP);
+    if (ret < 0)
+        return ret;
+
+    asc_cpu_stop(rtk->asc);
+    return 0;
 }

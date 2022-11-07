@@ -399,6 +399,7 @@ int afk_epic_command(afk_epic_ep_t *epic, int channel, u16 code, void *txbuf, si
         if (sub->category != CAT_REPLY || sub->code != code) {
             printf("EPIC: got unexpected message %02x:%04x during command\n", sub->category,
                    sub->code);
+            afk_epic_rx_ack(epic);
             continue;
         }
 
@@ -483,11 +484,11 @@ int afk_epic_shutdown(afk_epic_ep_t *epic)
 
 int afk_epic_start_interface(afk_epic_ep_t *epic, char *name, size_t txsize, size_t rxsize)
 {
-    int channel;
+    int channel = -1;
     struct afk_qe *msg;
     struct epic_announce *announce;
 
-    while (true) {
+    for (int tries = 0; tries < 20; tries += 1) {
 
         int ret = afk_epic_rx(epic, &msg);
         if (ret < 0)
@@ -505,6 +506,7 @@ int afk_epic_start_interface(afk_epic_ep_t *epic, char *name, size_t txsize, siz
         if (sub->category != CAT_REPORT || sub->code != CODE_ANNOUNCE) {
             printf("EPIC: got unexpected message %02x:%04x during iface start\n", sub->category,
                    sub->code);
+            afk_epic_rx_ack(epic);
             continue;
         }
 
@@ -512,13 +514,18 @@ int afk_epic_start_interface(afk_epic_ep_t *epic, char *name, size_t txsize, siz
 
         if (strncmp(name, announce->name, sizeof(announce->name))) {
             printf("EPIC: ignoring channel %d: %s\n", msg->channel, announce->name);
+            afk_epic_rx_ack(epic);
             continue;
         }
 
+        channel = msg->channel;
         break;
     }
 
-    channel = msg->channel;
+    if (channel == -1) {
+        printf("EPIC: too many unexpected messages, giving up\n");
+        return -1;
+    }
 
     if (!rtkit_alloc_buffer(epic->rtk, &epic->rxbuf, rxsize)) {
         printf("EPIC: failed to allocate rx buffer\n");

@@ -1,4 +1,3 @@
-ARCH ?= aarch64-linux-gnu-
 RUSTARCH ?= aarch64-unknown-none-softfloat
 
 ifeq ($(shell uname),Darwin)
@@ -10,6 +9,12 @@ else
 TOOLCHAIN ?= /usr/local/opt/llvm/bin/
 endif
 $(info INFO: Toolchain path: $(TOOLCHAIN))
+endif
+
+ifeq ($(shell uname -m),aarch64)
+ARCH ?=
+else
+ARCH ?= aarch64-linux-gnu-
 endif
 
 ifeq ($(USE_CLANG),1)
@@ -75,11 +80,17 @@ OBJECTS := \
 	chainload.o \
 	chainload_asm.o \
 	chickens.o \
+	chickens_avalanche.o \
+	chickens_blizzard.o \
+	chickens_firestorm.o \
+	chickens_icestorm.o \
 	clk.o \
 	cpufreq.o \
+	dapf.o \
 	dart.o \
 	dcp.o \
 	dcp_iboot.o \
+	devicetree.o \
 	display.o \
 	exception.o exception_asm.o \
 	fb.o font.o font_retina.o \
@@ -106,7 +117,7 @@ OBJECTS := \
 	start.o \
 	startup.o \
 	string.o \
-	tunables.o \
+	tunables.o tunables_static.o \
 	tps6598x.o \
 	uart.o \
 	uartproxy.o \
@@ -123,7 +134,7 @@ TARGET_RAW := m1n1.bin
 
 DEPDIR := build/.deps
 
-.PHONY: all clean format update_tag update_cfg
+.PHONY: all clean format update_tag update_cfg invoke_cc
 all: update_tag update_cfg build/$(TARGET) build/$(TARGET_RAW)
 clean:
 	rm -rf build/*
@@ -154,6 +165,10 @@ build/%.o: src/%.c
 	@mkdir -p $(DEPDIR)
 	@mkdir -p "$(dir $@)"
 	@$(CC) -c $(CFLAGS) -MMD -MF $(DEPDIR)/$(*F).d -MQ "$@" -MP -o $@ $<
+
+# special target for usage by m1n1.loadobjs
+invoke_cc:
+	@$(CC) -c $(CFLAGS) -Isrc -o $(OBJFILE) $(CFILE)
 
 build/$(NAME).elf: $(BUILD_OBJS) m1n1.ld
 	@echo "  LD    $@"
@@ -186,10 +201,10 @@ update_cfg:
 build/build_tag.h: update_tag
 build/build_cfg.h: update_cfg
 
-build/%.bin: data/%.png
+build/%.bin: data/%.bin
 	@echo "  IMG   $@"
 	@mkdir -p "$(dir $@)"
-	@convert $< -background black -flatten -depth 8 rgba:$@
+	@cp $< $@
 
 build/%.o: build/%.bin
 	@echo "  BIN   $@"

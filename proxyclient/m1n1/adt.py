@@ -136,6 +136,24 @@ PMGREvents = SafeGreedyRange(Struct(
     "name" / PaddedString(16, "ascii"),
 ))
 
+GPUPerfState = Struct(
+    "freq" / Int32ul,
+    "volt" / Int32ul,
+)
+
+SpeakerConfig = Struct(
+    "rx_slot" / Int8ul,
+    "amp_gain" / Int8ul,
+    "vsense_slot" / Int8ul,
+    "isense_slot" / Int8ul,
+)
+
+DCBlockerConfig = Struct(
+    "dc_blk0" / Hex(Int8ul),
+    "dc_blk1" / Hex(Int8ul),
+    "pad" / Hex(Int16ul),
+)
+
 DEV_PROPERTIES = {
     "pmgr": {
         "*": {
@@ -169,7 +187,7 @@ DEV_PROPERTIES = {
             "config-data": SafeGreedyRange(Int32ul),
         }
     },
-    "spmi-*": {
+    "*pmu*": {
         "*": {
             "info-*name*": CString("ascii"),
             "info-*": SafeGreedyRange(Hex(Int32ul)),
@@ -179,6 +197,16 @@ DEV_PROPERTIES = {
         "*": {
             "required-functions": ADTStringList,
         },
+    },
+    "sgx": {
+        "*": {
+            "perf-states": SafeGreedyRange(GPUPerfState),
+            "*-kp": Float32l,
+            "*-ki": Float32l,
+            "*-ki-*": Float32l,
+            "*-gain*": Float32l,
+            "*-scale*": Float32l,
+        }
     },
     "arm-io": {
         "*": {
@@ -191,6 +219,23 @@ DEV_PROPERTIES = {
         "*": {
             "pmap-io-ranges": PMAPIORanges,
         }
+    },
+    "audio-*": {
+        "*": {
+            "speaker-config": SafeGreedyRange(SpeakerConfig),
+            "amp-dcblocker-config": DCBlockerConfig,
+        },
+    },
+    "*aop-audio*": {
+        "*": {
+            "clockSource": FourCC,
+            "identifier": FourCC,
+        },
+    },
+    "*alc?/audio-leap-mic*": {
+        "*": {
+            "audio-stream-formatter": FourCC,
+        }
     }
 }
 
@@ -202,9 +247,15 @@ def parse_prop(node, path, node_name, name, v, is_template=False):
 
     dev_props = None
     for k, pt in DEV_PROPERTIES.items():
-        if fnmatch.fnmatch(node_name, k) or fnmatch.fnmatch(path, k):
+        if fnmatch.fnmatch(path, k):
             dev_props = pt
             break
+
+    if not dev_props:
+        for k, pt in DEV_PROPERTIES.items():
+            if fnmatch.fnmatch(node_name, k):
+                dev_props = pt
+                break
 
     possible_match = False
     if dev_props:
@@ -492,17 +543,25 @@ class ADTNode:
         addr = reg.addr
         size = reg.size
 
-        node = self._parent
+        return self._parent.translate(addr), size
+
+    def translate(self, addr):
+        node = self
         while node is not None:
             if "ranges" not in node._properties:
                 break
             for r in node.ranges:
-                if r.bus_addr <= addr < (r.bus_addr + r.size):
-                    addr = addr - r.bus_addr + r.parent_addr
+                ba = r.bus_addr
+                # PCIe special case, because Apple really broke
+                # the spec here with their little endian antics
+                if isinstance(ba, list) and len(ba) == 3:
+                    ba = (ba[0] << 64) | (ba[2] << 32) | ba[1]
+                if ba <= addr < (ba + r.size):
+                    addr = addr - ba + r.parent_addr
                     break
             node = node._parent
 
-        return addr, size
+        return addr
 
     def tostruct(self):
         properties = []

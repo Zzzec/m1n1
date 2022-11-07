@@ -98,6 +98,7 @@ typedef enum {
     P_PMGR_POWER_DISABLE,
     P_PMGR_ADT_POWER_ENABLE,
     P_PMGR_ADT_POWER_DISABLE,
+    P_PMGR_RESET,
 
     P_IODEV_SET_USAGE = 0x900,
     P_IODEV_CAN_READ,
@@ -126,6 +127,9 @@ typedef enum {
     P_HV_WDT_START,
     P_HV_START_SECONDARY,
     P_HV_SWITCH_CPU,
+    P_HV_SET_TIME_STEALING,
+    P_HV_PIN_CPU,
+    P_HV_WRITE_HCR,
 
     P_FB_INIT = 0xd00,
     P_FB_SHUTDOWN,
@@ -145,7 +149,15 @@ typedef enum {
     P_NVME_READ,
     P_NVME_FLUSH,
 
-    P_MCC_HV_UNMAP_CARVEOUTS = 0x1000,
+    P_MCC_GET_CARVEOUTS = 0x1000,
+
+    P_DISPLAY_INIT = 0x1100,
+    P_DISPLAY_CONFIGURE,
+    P_DISPLAY_SHUTDOWN,
+
+    P_DAPF_INIT_ALL = 0x1200,
+    P_DAPF_INIT,
+
 } ProxyOp;
 
 #define S_OK     0

@@ -51,6 +51,8 @@ asc_dev_t *asc_init(const char *path)
     asc->iop_node = adt_first_child_offset(adt, node);
     asc->cpu_base = base;
     asc->base = base + 0x8000;
+
+    clear32(base + ASC_CPU_CONTROL, ASC_CPU_CONTROL_START);
     return asc;
 }
 
@@ -110,8 +112,10 @@ bool asc_can_send(asc_dev_t *asc)
 
 bool asc_send(asc_dev_t *asc, const struct asc_message *msg)
 {
-    if (!asc_can_send(asc))
+    if (poll32(asc->base + ASC_MBOX_A2I_CONTROL, ASC_MBOX_CONTROL_FULL, 0, 200000)) {
+        printf("asc: A2I mailbox full for 200ms. Is the ASC stuck?");
         return false;
+    }
 
     dma_wmb();
     write64(asc->base + ASC_MBOX_A2I_SEND0, msg->msg0);

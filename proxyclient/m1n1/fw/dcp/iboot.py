@@ -4,6 +4,7 @@ from construct import *
 from ...utils import *
 from ..asc import StandardASC
 from ..afk.epic import *
+from .dcpav import *
 
 EOTF = "EOTF" / Enum(Int32ul,
     GAMMA_SDR = 1,
@@ -147,7 +148,7 @@ class DCPIBootService(EPICService):
 
     def getModeCount(self):
         buf = self.send_cmd(3, b"", 12)
-        hpd, timing_cnt, color_cnt = struct.unpack("<III", buf)
+        hpd, timing_cnt, color_cnt = struct.unpack("<B3xII", buf)
         return bool(hpd), timing_cnt, color_cnt
 
     def getTimingModes(self):
@@ -194,7 +195,13 @@ class DCPIBootClient(StandardASC):
     DVA_OFFSET = 0xf00000000
 
     ENDPOINTS = {
+        0x20: AFKSystemEndpoint,
         0x23: DCPIBootEndpoint,
+        0x24: DCPDPTXEndpoint,
+        0x2a: DCPDPTXPortEndpoint,
+        0x27: DCPAVDeviceEndpoint,
+        0x28: DCPAVServiceEndpoint,
+        0x29: DCPAVVideoEndpoint,
     }
 
     def __init__(self, u, asc_base, dart=None, disp_dart=None):

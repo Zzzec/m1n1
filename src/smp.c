@@ -4,11 +4,18 @@
 #include "adt.h"
 #include "cpu_regs.h"
 #include "malloc.h"
+#include "pmgr.h"
+#include "soc.h"
 #include "string.h"
 #include "types.h"
 #include "utils.h"
 
-#define CPU_START_OFF 0x54000
+#define CPU_START_OFF_T8103 0x54000
+#define CPU_START_OFF_T8112 0x34000
+
+#define CPU_REG_CORE    GENMASK(7, 0)
+#define CPU_REG_CLUSTER GENMASK(10, 8)
+#define CPU_REG_DIE     GENMASK(14, 11)
 
 struct spin_table {
     u64 mpidr;
@@ -52,11 +59,13 @@ void smp_secondary_entry(void)
 
     while (1) {
         while (!(target = me->target)) {
-            if (wfe_mode)
+            if (wfe_mode) {
                 sysop("wfe");
-            else
+            } else {
                 deep_wfi();
-            msr(SYS_IMP_APL_IPI_SR_EL1, 1);
+                msr(SYS_IMP_APL_IPI_SR_EL1, 1);
+            }
+            sysop("isb");
         }
         sysop("dmb sy");
         me->flag++;
@@ -69,7 +78,7 @@ void smp_secondary_entry(void)
     }
 }
 
-static void smp_start_cpu(int index, int cluster, int core, u64 rvbar, u64 cpu_start_base)
+static void smp_start_cpu(int index, int die, int cluster, int core, u64 rvbar, u64 cpu_start_base)
 {
     int i;
 
@@ -79,7 +88,7 @@ static void smp_start_cpu(int index, int cluster, int core, u64 rvbar, u64 cpu_s
     if (spin_table[index].flag)
         return;
 
-    printf("Starting CPU %d (%d:%d)... ", index, cluster, core);
+    printf("Starting CPU %d (%d:%d:%d)... ", index, die, cluster, core);
 
     memset(&spin_table[index], 0, sizeof(struct spin_table));
 
@@ -90,6 +99,8 @@ static void smp_start_cpu(int index, int cluster, int core, u64 rvbar, u64 cpu_s
     sysop("dmb sy");
 
     write64(rvbar, (u64)_vectors_start);
+
+    cpu_start_base += die * PMGR_DIE_OFFSET;
 
     // Some kind of system level startup/status bit
     // Without this, IRQs don't work
@@ -136,8 +147,24 @@ void smp_start_secondaries(void)
     }
 
     int cpu_nodes[MAX_CPUS];
+    u64 cpu_start_off;
 
     memset(cpu_nodes, 0, sizeof(cpu_nodes));
+
+    switch (chip_id) {
+        case T8103:
+        case T6000:
+        case T6001:
+        case T6002:
+            cpu_start_off = CPU_START_OFF_T8103;
+            break;
+        case T8112:
+            cpu_start_off = CPU_START_OFF_T8112;
+            break;
+        default:
+            printf("CPU start offset is unknown for this SoC!\n");
+            return;
+    }
 
     ADT_FOREACH_CHILD(adt, node)
     {
@@ -166,7 +193,11 @@ void smp_start_secondaries(void)
         if (ADT_GETPROP_ARRAY(adt, node, "cpu-impl-reg", cpu_impl_reg) < 0)
             continue;
 
-        smp_start_cpu(i, reg >> 8, reg & 0xff, cpu_impl_reg[0], pmgr_reg + CPU_START_OFF);
+        u8 core = FIELD_GET(CPU_REG_CORE, reg);
+        u8 cluster = FIELD_GET(CPU_REG_CLUSTER, reg);
+        u8 die = FIELD_GET(CPU_REG_DIE, reg);
+
+        smp_start_cpu(i, die, cluster, core, cpu_impl_reg[0], pmgr_reg + cpu_start_off);
     }
 
     spin_table[0].mpidr = mrs(MPIDR_EL1) & 0xFFFFFF;
@@ -198,7 +229,7 @@ void smp_call4(int cpu, void *func, u64 arg0, u64 arg1, u64 arg2, u64 arg3)
     target->args[3] = arg3;
     sysop("dmb sy");
     target->target = (u64)func;
-    sysop("dmb sy");
+    sysop("dsb sy");
 
     if (wfe_mode)
         sysop("sev");
@@ -225,7 +256,7 @@ u64 smp_wait(int cpu)
 void smp_set_wfe_mode(bool new_mode)
 {
     wfe_mode = new_mode;
-    sysop("dmb sy");
+    sysop("dsb sy");
 
     for (int cpu = 1; cpu < MAX_CPUS; cpu++)
         if (smp_is_alive(cpu))

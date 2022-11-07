@@ -10,6 +10,9 @@
 // Initialize USB early and break into proxy if device is opened within this time (sec)
 //#define EARLY_PROXY_TIMEOUT 5
 
+// Minimal build for bring-up
+//#define BRINGUP
+
 // Print RTKit logs to the console
 //#define RTKIT_SYSLOG
 
@@ -18,7 +21,9 @@
 
 #ifdef RELEASE
 # define FB_SILENT_MODE
-# define EARLY_PROXY_TIMEOUT 5
+# ifdef CHAINLOADING
+#  define EARLY_PROXY_TIMEOUT 5
+# endif
 #endif
 
 #endif

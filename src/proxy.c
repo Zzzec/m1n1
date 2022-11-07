@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "proxy.h"
+#include "dapf.h"
 #include "dart.h"
+#include "display.h"
 #include "exception.h"
 #include "fb.h"
 #include "gxf.h"
@@ -377,6 +379,9 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
         case P_PMGR_ADT_POWER_DISABLE:
             reply->retval = pmgr_adt_power_disable((const char *)request->args[0]);
             break;
+        case P_PMGR_RESET:
+            reply->retval = pmgr_reset(request->args[0], (const char *)request->args[1]);
+            break;
 
         case P_IODEV_SET_USAGE:
             iodev_set_usage(request->args[0], request->args[1]);
@@ -417,7 +422,8 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             break;
 
         case P_DART_INIT:
-            reply->retval = (u64)dart_init(request->args[0], request->args[1], request->args[2]);
+            reply->retval = (u64)dart_init(request->args[0], request->args[1], request->args[2],
+                                           request->args[3]);
             break;
         case P_DART_SHUTDOWN:
             dart_shutdown((dart_dev_t *)request->args[0]);
@@ -440,7 +446,8 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             hv_start((void *)request->args[0], &request->args[1]);
             break;
         case P_HV_TRANSLATE:
-            reply->retval = hv_translate(request->args[0], request->args[1], request->args[2]);
+            reply->retval = hv_translate(request->args[0], request->args[1], request->args[2],
+                                         (void *)request->args[3]);
             break;
         case P_HV_PT_WALK:
             reply->retval = hv_pt_walk(request->args[0]);
@@ -459,18 +466,28 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             hv_start_secondary(request->args[0], (void *)request->args[1], &request->args[2]);
             break;
         case P_HV_SWITCH_CPU:
-            hv_switch_cpu(request->args[0]);
+            reply->retval = hv_switch_cpu(request->args[0]);
+            break;
+        case P_HV_SET_TIME_STEALING:
+            hv_set_time_stealing(request->args[0], request->args[1]);
+            break;
+        case P_HV_PIN_CPU:
+            hv_pin_cpu(request->args[0]);
+            break;
+        case P_HV_WRITE_HCR:
+            hv_write_hcr(request->args[0]);
             break;
 
         case P_FB_INIT:
-            fb_init();
+            fb_init(request->args[0]);
             break;
         case P_FB_SHUTDOWN:
             fb_shutdown(request->args[0]);
             break;
         case P_FB_BLIT:
+            // HACK: Running out of args, stash pix fmt in high bits of stride...
             fb_blit(request->args[0], request->args[1], request->args[2], request->args[3],
-                    (void *)request->args[4], request->args[5]);
+                    (void *)request->args[4], (u32)request->args[5], request->args[5] >> 32);
             break;
         case P_FB_UNBLIT:
             fb_unblit(request->args[0], request->args[1], request->args[2], request->args[3],
@@ -513,8 +530,25 @@ int proxy_process(ProxyRequest *request, ProxyReply *reply)
             reply->retval = nvme_flush(request->args[0]);
             break;
 
-        case P_MCC_HV_UNMAP_CARVEOUTS:
-            reply->retval = mcc_hv_unmap_carveouts();
+        case P_MCC_GET_CARVEOUTS:
+            reply->retval = (u64)mcc_carveouts;
+            break;
+
+        case P_DISPLAY_INIT:
+            reply->retval = display_init();
+            break;
+        case P_DISPLAY_CONFIGURE:
+            reply->retval = display_configure((char *)request->args[0]);
+            break;
+        case P_DISPLAY_SHUTDOWN:
+            display_shutdown(request->args[0]);
+            break;
+
+        case P_DAPF_INIT_ALL:
+            reply->retval = dapf_init_all();
+            break;
+        case P_DAPF_INIT:
+            reply->retval = dapf_init((const char *)request->args[0]);
             break;
 
         default:

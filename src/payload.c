@@ -4,6 +4,7 @@
 #include "adt.h"
 #include "assert.h"
 #include "chainload.h"
+#include "display.h"
 #include "heapblock.h"
 #include "kboot.h"
 #include "smp.h"
@@ -156,13 +157,13 @@ static char *chosen[MAX_CHOSEN_VARS];
 
 static bool check_var(u8 **p)
 {
-    char *val = memchr(*p, '=', MAX_VAR_NAME + 1);
+    char *val = memchr(*p, '=', strnlen((char *)*p, MAX_VAR_NAME + 1));
     if (!val)
         return false;
 
     val++;
 
-    char *end = memchr(val, '\n', MAX_VAR_SIZE + 1);
+    char *end = memchr(val, '\n', strnlen(val, MAX_VAR_SIZE + 1));
     if (!end)
         return false;
 
@@ -171,11 +172,13 @@ static bool check_var(u8 **p)
 
     if (IS_VAR("chosen.")) {
         if (chosen_cnt >= MAX_CHOSEN_VARS)
-            printf("Too many chosen vars, ignoring %s='%s'\n", *p, val);
+            printf("Too many chosen vars, ignoring %s\n", *p);
         else
             chosen[chosen_cnt++] = (char *)*p;
     } else if (IS_VAR("chainload=")) {
         chainload_spec = val;
+    } else if (IS_VAR("display=")) {
+        display_configure(val);
     } else {
         printf("Unknown variable %s\n", *p);
     }

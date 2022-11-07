@@ -23,6 +23,7 @@
 #include "sep.h"
 #include "smp.h"
 #include "string.h"
+#include "tunables.h"
 #include "uart.h"
 #include "uartproxy.h"
 #include "usb.h"
@@ -63,8 +64,17 @@ void run_actions(void)
 {
     bool usb_up = false;
 
+#ifndef BRINGUP
 #ifdef EARLY_PROXY_TIMEOUT
-    if (!cur_boot_args.video.display) {
+    int node = adt_path_offset(adt, "/chosen/asmb");
+    u64 lp_sip0 = 0;
+
+    if (node >= 0) {
+        ADT_GETPROP(adt, node, "lp-sip0", &lp_sip0);
+        printf("Boot policy: sip0 = %ld\n", lp_sip0);
+    }
+
+    if (!cur_boot_args.video.display && lp_sip0 == 127) {
         printf("Bringing up USB for early debug...\n");
 
         usb_init();
@@ -96,6 +106,7 @@ void run_actions(void)
         printf(" Timed out\n");
     }
 #endif
+#endif
 
     printf("Checking for payloads...\n");
 
@@ -108,10 +119,12 @@ void run_actions(void)
 
     printf("No valid payload found\n");
 
+#ifndef BRINGUP
     if (!usb_up) {
         usb_init();
         usb_iodev_init();
     }
+#endif
 
     printf("Running proxy...\n");
 
@@ -120,7 +133,7 @@ void run_actions(void)
 
 void m1n1_main(void)
 {
-    printf("\n\nm1n1 v%s\n", m1n1_version);
+    printf("\n\nm1n1 %s\n", m1n1_version);
     printf("Copyright The Asahi Linux Contributors\n");
     printf("Licensed under the MIT license\n\n");
 
@@ -129,13 +142,24 @@ void m1n1_main(void)
     get_device_info();
 
     heapblock_init();
+
+#ifndef BRINGUP
     gxf_init();
     mcc_init();
     mmu_init();
+    aic_init();
+#endif
+    wdt_disable();
+#ifndef BRINGUP
+    pmgr_init();
+    tunables_apply_static();
 
 #ifdef USE_FB
     display_init();
-    fb_init();
+    // Kick DCP to sleep, so dodgy monitors which cause reconnect cycles don't cause us to lose the
+    // framebuffer.
+    display_shutdown(DCP_SLEEP_IF_EXTERNAL);
+    fb_init(false);
     fb_display_logo();
 #ifdef FB_SILENT_MODE
     fb_set_active(!cur_boot_args.video.display);
@@ -144,12 +168,10 @@ void m1n1_main(void)
 #endif
 #endif
 
-    aic_init();
-    wdt_disable();
-    pmgr_init();
     clk_init();
     cpufreq_init();
     sep_init();
+#endif
 
     printf("Initialization complete.\n");
 
@@ -163,11 +185,14 @@ void m1n1_main(void)
 
     nvme_shutdown();
     exception_shutdown();
+#ifndef BRINGUP
     usb_iodev_shutdown();
+    display_shutdown(DCP_SLEEP_IF_EXTERNAL);
 #ifdef USE_FB
     fb_shutdown(next_stage.restore_logo);
 #endif
     mmu_shutdown();
+#endif
 
     printf("Vectoring to next stage...\n");
 
