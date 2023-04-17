@@ -18,13 +18,21 @@ import traceback
 __all__ = []
 
 class MemoryAttr(IntEnum):
+    # ff = Normal, Outer Writeback RW, Inner Writeback RW
     Normal = 0 # Only accessed by the gfx-asc coprocessor
+    # 00 = Device nGnRnE
     Device = 1
+    # f4 = Normal, Outer Writeback RW, Inner NC
     Shared = 2 # Probally Outer-shareable. Shared with either the main cpu or AGX hardware
+    # 4f = Normal, Outer NC, Inner Writeback RW
     UNK3 = 3
+    # 00 = Device nGnRnE
     UNK4 = 4
+    # ff = Normal, Outer Writeback RW, Inner Writeback RW
     UNK5 = 5
+    # 00 = Device nGnRnE
     UNK6 = 6
+    # 00 = Device nGnRnE
     UNK7 = 7
 
 
@@ -36,6 +44,9 @@ class TTBR(Register64):
     def valid(self):
         return self.VALID == 1
 
+    def block(self):
+        return False
+
     def offset(self):
         return self.BADDR << 1
 
@@ -46,26 +57,6 @@ class TTBR(Register64):
         return f"{self.offset():x} [ASID={self.ASID}, VALID={self.VALID}]"
 
 class PTE(Register64):
-    OFFSET = 47, 14
-    UNK0   = 10 # probally an ownership flag, seems to be 1 for FW created PTEs and 0 for OS PTEs
-    TYPE   = 1
-    VALID  = 0
-
-    def valid(self):
-        return self.VALID == 1 and self.TYPE == 1
-
-    def offset(self):
-        return self.OFFSET << 14
-
-    def set_offset(self, offset):
-        self.OFFSET = offset >> 14
-
-    def describe(self):
-        if not self.valid():
-            return f"<invalid> [{int(self)}:x]"
-        return f"{self.offset():x}, UNK={self.UNK0}"
-
-class Page_PTE(Register64):
     OS        = 55 # Owned by host os or firmware
     UXN       = 54
     PXN       = 53
@@ -79,7 +70,11 @@ class Page_PTE(Register64):
     VALID     = 0
 
     def valid(self):
-        return self.VALID == 1 and self.TYPE == 1
+        return self.VALID == 1
+
+    def block(self):
+        return self.TYPE == 0
+
 
     def offset(self):
         return self.OFFSET << 14
@@ -129,6 +124,13 @@ class Page_PTE(Register64):
             f"{MemoryAttr(self.AttrIndex).name}, {['Global', 'Local'][self.nG]}, " +
             f"Owner={['FW', 'OS'][self.OS]}, AF={self.AF}, SH={self.SH}] ({self.value:#x})"
         )
+
+class Page_PTE(PTE):
+    def valid(self):
+        return self.VALID == 1 and self.TYPE == 1
+
+    def block(self):
+        return True
 
 class UatAccessor(Reloadable):
     def __init__(self, uat, ctx=0):
@@ -267,11 +269,11 @@ class UAT(Reloadable):
         self.hv = hv
         self.pt_cache = {}
         self.dirty = set()
+        self.dirty_ranges = {}
         self.allocator = None
         self.ttbr = None
         self.initialized = False
         self.sgx_dev = self.u.adt["/arm-io/sgx"]
-        self.handoff = self.sgx_dev.gfx_handoff_base
         self.shared_region = self.sgx_dev.gfx_shared_region_base
         self.gpu_region = self.sgx_dev.gpu_region_base
         self.ttbr0_base = self.u.memalign(self.PAGE_SIZE, self.PAGE_SIZE)
@@ -299,7 +301,7 @@ class UAT(Reloadable):
         data = []
         for addr, size in ranges:
             if addr is None:
-                raise Exception(f"Unmapped page at iova {iova:#x}")
+                raise Exception(f"Unmapped page at iova {ctx}:{iova:#x}")
             data.append(self.iface.readmem(addr, size))
             iova += size
 
@@ -315,7 +317,7 @@ class UAT(Reloadable):
         p = 0
         for addr, size in ranges:
             if addr is None:
-                raise Exception(f"Unmapped page at iova {iova:#x}")
+                raise Exception(f"Unmapped page at iova {ctx}:{iova:#x}")
             self.iface.writemem(addr, data[p:p + size])
             p += size
             iova += size
@@ -325,7 +327,7 @@ class UAT(Reloadable):
         return UatStream(self, ctx, base, recurse)
 
     # A read/write register interface like proxy/utils objects that can be used by RegMap
-    def ioaccessor(self, ctx, base):
+    def ioaccessor(self, ctx):
         return UatAccessor(self, ctx)
 
     def iomap(self, ctx, addr, size, **flags):
@@ -375,6 +377,7 @@ class UAT(Reloadable):
                         self.write_pte(table_addr, page >> offset, size, pte)
                     table_addr = pte.offset()
 
+        self.dirty_ranges.setdefault(ctx, []).append((start_page, end_page - start_page))
         #self.flush_dirty()
 
 
@@ -446,14 +449,29 @@ class UAT(Reloadable):
 
         return ranges
 
+    def ioperm(self, ctx, addr):
+        page = align_down(addr, self.PAGE_SIZE)
+
+        table_addr = self.gpu_region + ctx * 16
+        for (offset, size, ptecls) in self.LEVELS:
+            pte = self.fetch_pte(table_addr, page >> offset, size, ptecls)
+            if not pte.valid():
+                break
+            table_addr = pte.offset()
+
+        return pte
+
     def get_pt(self, addr, size=None, uncached=False):
         if size is None:
             size = self.Lx_SIZE
         cached = True
         if addr not in self.pt_cache or uncached:
             cached = False
-            self.pt_cache[addr] = list(
-                struct.unpack(f"<{size}Q", self.iface.readmem(addr, size * 8)))
+            if self.p.read32(addr) == 0xabad1dea:
+                self.pt_cache[addr] = [0xabad1dea0000] * size
+            else:
+                self.pt_cache[addr] = list(
+                    struct.unpack(f"<{size}Q", self.iface.readmem(addr, size * 8)))
 
         return cached, self.pt_cache[addr]
 
@@ -461,7 +479,7 @@ class UAT(Reloadable):
         assert addr in self.pt_cache
         table = self.pt_cache[addr]
         self.iface.writemem(addr, struct.pack(f"<{len(table)}Q", *table))
-        self.p.dc_civac(addr, 0x4000)
+        #self.p.dc_civac(addr, 0x4000)
 
     def flush_dirty(self):
         inval = False
@@ -472,8 +490,9 @@ class UAT(Reloadable):
 
         self.dirty.clear()
 
-        if inval:
-            self.u.inst("tlbi vmalle1os")
+        for ctx, ranges in self.dirty_ranges.items():
+            asid = ctx << 48
+            self.u.inst("tlbi aside1os, x0", asid)
 
     def invalidate_cache(self):
         self.pt_cache = {}
@@ -498,7 +517,7 @@ class UAT(Reloadable):
             start = extend(base + i * range_size)
             end = start + range_size - 1
 
-            if level + 1 == len(self.LEVELS):
+            if pte.block():
                 if page_fn:
                     page_fn(start, end, i, pte, level, sparse=sparse)
             else:
@@ -549,7 +568,7 @@ class UAT(Reloadable):
 
     def dump(self, ctx, log=print):
         def print_fn(start, end, i, pte, level, sparse):
-            type = "page" if level+1 == len(self.LEVELS) else "table"
+            type = "page" if pte.block() else "table"
             if sparse:
                 log(f"{'  ' * level}...")
             log(f"{'  ' * level}{type}({i:03}): {start:011x} ... {end:011x}"

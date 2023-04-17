@@ -7,23 +7,13 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 import struct
 from m1n1.setup import *
 from m1n1.fw.asc import StandardASC
-from m1n1.hw.dart8110 import DART8110
+from m1n1.hw.dart import DART
 from m1n1.hw.dockchannel import DockChannel
 from m1n1.fw.smc import SMCClient, SMCError
 from m1n1.shell import run_shell
 from m1n1.fw.mtp import *
 
 from construct import *
-
-mon = RegMonitor(u)
-
-#mon.add(0x23b700000, 0x10000)
-mon.add(0x23d28c000, 0x4000)
-mon.poll()
-mon.poll()
-mon.poll()
-mon.add(0x24e400000, 0x4000)
-mon.add(0x24e808000, 0x14000)
 
 smc_addr = u.adt["arm-io/smc"].get_reg(0)[0]
 smc = SMCClient(u, smc_addr)
@@ -33,9 +23,9 @@ smc.verbose = 0
 
 p.dapf_init_all()
 
-dart = DART8110.from_adt(u, "/arm-io/dart-mtp", iova_range=(0x8000, 0x100000))
+dart = DART.from_adt(u, "/arm-io/dart-mtp", iova_range=(0x8000, 0x100000))
 
-dart.regs.TCR[1].set(BYPASS_DAPF=0, BYPASS_DART=0, TRANSLATE_ENABLE=1)
+dart.dart.regs.TCR[1].set(BYPASS_DAPF=0, BYPASS_DART=0, TRANSLATE_ENABLE=1)
 
 irq_base = u.adt["/arm-io/dockchannel-mtp"].get_reg(1)[0]
 fifo_base = u.adt["/arm-io/dockchannel-mtp"].get_reg(2)[0]
@@ -48,35 +38,16 @@ while dc.rx_count:
 
 mtp_addr = u.adt["/arm-io/mtp"].get_reg(0)[0]
 mtp = StandardASC(u, mtp_addr, dart, stream=1)
+mtp.boot()
+mtp.verbose = 3
 mtp.allow_phys = True
 print("pre start")
-mon.poll()
-mtp.start()
-print("started")
-mon.poll()
-print("ok")
 
 def poll():
     mtp.work()
     mp.work_pending()
 
-# 0x40: device reset
-# 0x42:
-
-# 0 -> mbox?
-# 2 -> dapf?
-# 3 -> dart?
-# 3 -> dockchannel?
-# 5 -> mbox?
-def reset(i):
-    reg = 0x23d28c000 + i*8
-    p.set32(reg, 1<<10)
-    p.set32(reg, 1<<31)
-    p.clear32(reg, 1<<31)
-    p.clear32(reg, 1<<10)
-
 try:
-
     mp = MTPProtocol(u, node, mtp, dc, smc)
 
     mp.wait_init("keyboard")

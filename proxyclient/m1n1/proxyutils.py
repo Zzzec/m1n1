@@ -22,10 +22,17 @@ SIMD_Q = Array(32, BytesInteger(16, swapped=True))
 # This isn't perfect, since multiple versions could have the same
 # iBoot version, but it's good enough
 VERSION_MAP = {
-    "iBoot-7429.61.2": "12.1",
-    "iBoot-7459.101.2": "12.3",
-    "iBoot-7459.101.3": "12.4",
-    "iBoot-8419.0.151.0.1": "13.0 beta4",
+    "iBoot-7429.61.2": "V12_1",
+    "iBoot-7429.81.3": "V12_2",
+    "iBoot-7459.101.2": "V12_3",
+    "iBoot-7459.121.3": "V12_4",
+    "iBoot-7459.141.1": "V12_5",
+    "iBoot-8419.0.151.0.1": "V13_0B4",
+    "iBoot-8419.40.2.0.5": "V13_0B5",
+    "iBoot-8419.40.33.0.1": "V13_0B6",
+    "iBoot-8419.41.10": "V13_0",
+    "iBoot-8419.60.44": "V13_1",
+    "iBoot-8419.80.7": "V13_2",
 }
 
 class ProxyUtils(Reloadable):
@@ -415,6 +422,8 @@ class LazyADT:
          self._adt[item] = value
     def __delitem__(self, item):
          del self._adt[item]
+    def __contains__(self, item):
+        return item in self._adt
     def __getattr__(self, attr):
         return getattr(self._adt, attr)
     def __setattr__(self, attr, value):

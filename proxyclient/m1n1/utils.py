@@ -13,6 +13,12 @@ align = align_up
 def align_down(v, a=16384):
     return v & ~(a - 1)
 
+def align_pot(v):
+    out = 1
+    while out < v:
+        out *= 2
+    return out
+
 def hexdump(s, sep=" "):
     return sep.join(["%02x"%x for x in s])
 
@@ -513,7 +519,7 @@ class RangeMap(Reloadable):
 
     def _overlap_range(self, zone, split=False):
         zone = self.__zone(zone)
-        if len(zone) == 0:
+        if not zone:
             return 0, 0
 
         start = bisect.bisect_left(self.__end, zone.start)

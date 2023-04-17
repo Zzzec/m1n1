@@ -13,6 +13,8 @@ from .. import xnutools, shell
 
 from .gdbserver import *
 from .types import *
+from .virtutils import *
+from .virtio import *
 
 __all__ = ["HV"]
 
@@ -111,6 +113,7 @@ class HV(Reloadable):
         self.hvcall_handlers = {}
         self.switching_context = False
         self.show_timestamps = False
+        self.virtio_devs = {}
 
     def _reloadme(self):
         super()._reloadme()
@@ -363,7 +366,7 @@ class HV(Reloadable):
         while True:
             try:
                 return func()
-            except:
+            except Exception:
                 print(f"Exception in {description}")
                 traceback.print_exc()
 
@@ -492,6 +495,10 @@ class HV(Reloadable):
             raise Exception(f"VM hook with unexpected mapping at {data.addr:#x}: {maps[0][0].name}")
 
         if not data.flags.WRITE:
+            if mode == TraceMode.HOOK and not read:
+                mode = TraceMode.SYNC
+                first += 1
+
             if mode == TraceMode.HOOK:
                 val = self.shellwrap(lambda: read(data.addr, 8 << data.flags.WIDTH, **kwargs),
                                      f"Tracer {ident}:read (HOOK)", update=do_update, needs_ret=True)
@@ -550,6 +557,9 @@ class HV(Reloadable):
                 wval = val[0]
             else:
                 wval = val
+
+            if mode == TraceMode.HOOK and not write:
+                mode = TraceMode.SYNC
 
             if mode == TraceMode.HOOK:
                 self.shellwrap(lambda: write(data.addr, wval, 8 << data.flags.WIDTH, **kwargs),
@@ -651,6 +661,9 @@ class HV(Reloadable):
             ACC_CFG_EL1,
             ACC_OVRD_EL1,
         }
+        xlate = {
+            DC_CIVAC,
+        }
         for i in range(len(self._bps)):
             shadow.add(DBGBCRn_EL1(i))
             shadow.add(DBGBVRn_EL1(i))
@@ -691,6 +704,8 @@ class HV(Reloadable):
                     value = ctx.regs[iss.Rt]
                 enc2 = self.MSR_REDIRECTS.get(enc, enc)
                 sys.stdout.flush()
+                if enc in xlate:
+                    value = self.p.hv_translate(value, True, False)
                 self.u.msr(enc2, value, call=self.p.gl2_call)
                 self.log(f"Pass: msr {name}, x{iss.Rt} = {value:x} (OK) ({sysreg_name(enc2)})")
 
@@ -994,6 +1009,71 @@ class HV(Reloadable):
 
         self.p.exit(0)
 
+    def attach_virtio(self, dev, base=None, irq=None, verbose=False):
+        if base is None:
+            base = alloc_mmio_base(self.adt, 0x1000)
+        if irq is None:
+            irq = alloc_aic_irq(self.adt)
+
+        data = dev.config_data
+        data_base = self.u.heap.malloc(len(data))
+        self.iface.writemem(data_base, data)
+
+        config = VirtioConfig.build({
+            "irq": irq,
+            "devid": dev.devid,
+            "feats": dev.feats,
+            "num_qus": dev.num_qus,
+            "data": data_base,
+            "data_len": len(data),
+            "verbose": verbose,
+        })
+
+        config_base = self.u.heap.malloc(len(config))
+        self.iface.writemem(config_base, config)
+
+        name = None
+        for i in range(16):
+            n = "/arm-io/virtio%d" % i
+            if n not in self.adt:
+                name = n
+                break
+        if name is None:
+            raise ValueError("Too many virtios in ADT")
+
+        print(f"Adding {n} @ 0x{base:x}, irq {irq}")
+
+        node = self.adt.create_node(name)
+        node.reg = [Container(addr=node.to_bus_addr(base), size=0x1000)]
+        node.interrupt_parent = getattr(self.adt["/arm-io/aic"], "AAPL,phandle")
+        node.interrupts = (irq,)
+        node.compatible = ["virtio,mmio"]
+
+        self.p.hv_map_virtio(base, config_base)
+        self.add_tracer(irange(base, 0x1000), "VIRTIO", TraceMode.RESERVED)
+
+        dev.base = base
+        dev.hv = self
+        self.virtio_devs[base] = dev
+
+    def handle_virtio(self, reason, code, info):
+        ctx = self.iface.readstruct(info, ExcInfo)
+        self.virtio_ctx = info = self.iface.readstruct(ctx.data, VirtioExcInfo)
+
+        try:
+            handled = self.virtio_devs[info.devbase].handle_exc(info)
+        except:
+            self.log(f"Python exception from within virtio handler")
+            traceback.print_exc()
+            handled = False
+
+        if not handled:
+            signal.signal(signal.SIGINT, self.default_sigint)
+            self.run_shell("Entering hypervisor shell", "Returning")
+            signal.signal(signal.SIGINT, self._handle_sigint)
+
+        self.p.exit(EXC_RET.HANDLED)
+
     def skip(self):
         self.ctx.elr += 4
         self.cont()
@@ -1294,6 +1374,7 @@ class HV(Reloadable):
         self.iface.set_handler(START.HV, HV_EVENT.VTIMER, self.handle_exception)
         self.iface.set_handler(START.HV, HV_EVENT.WDT_BARK, self.handle_bark)
         self.iface.set_handler(START.HV, HV_EVENT.CPU_SWITCH, self.handle_exception)
+        self.iface.set_handler(START.HV, HV_EVENT.VIRTIO, self.handle_virtio)
         self.iface.set_event_handler(EVENT.MMIOTRACE, self.handle_mmiotrace)
         self.iface.set_event_handler(EVENT.IRQTRACE, self.handle_irqtrace)
 
@@ -1382,8 +1463,9 @@ class HV(Reloadable):
             return ret
 
         atc = f"ATC{self.iodev - IODEV.USB0}_USB"
+        atc_aon = f"ATC{self.iodev - IODEV.USB0}_USB_AON"
 
-        hook_devs = ["UART0", atc]
+        hook_devs = ["UART0", atc, atc_aon]
 
         pmgr = self.adt["/arm-io/pmgr"]
         dev_by_name = {dev.name: dev for dev in pmgr.devices}
@@ -1433,10 +1515,13 @@ class HV(Reloadable):
         die_count = self.adt["/arm-io"].die_count if hasattr(self.adt["/arm-io"], "die-count") else 1
 
         for die in range(0, die_count):
-            if self.u.adt["/chosen"].chip_id in (0x8103, 0x6000, 0x6001, 0x6002):
+            chip_id = self.u.adt["/chosen"].chip_id
+            if chip_id in (0x8103, 0x6000, 0x6001, 0x6002):
                 cpu_start = 0x54000 + die * 0x20_0000_0000
-            elif self.u.adt["/chosen"].chip_id in (0x8112,):
+            elif chip_id in (0x8112,):
                 cpu_start = 0x34000 + die * 0x20_0000_0000
+            elif chip_id in (0x6020, 0x6021):
+                cpu_start = 0x28000 + die * 0x20_0000_0000
             else:
                 self.log("CPUSTART unknown for this SoC!")
                 break
@@ -1602,6 +1687,18 @@ class HV(Reloadable):
         self.adt["chosen"]["memory-map"].BootArgs = (guest_base + self.bootargs_off, bootargs_size)
         if hasattr(self.u.adt["chosen"]["memory-map"], "preoslog"):
             self.adt["chosen"]["memory-map"].preoslog = (guest_base + preoslog_off, preoslog_size)
+        if hasattr(self.u.adt["chosen"]["memory-map"], "Kernel_mach__header"):
+            self.adt["chosen"]["memory-map"].Kernel_mach__header = (guest_base, 0)
+
+        for name in ("mtp", "aop"):
+            if name in self.adt["/arm-io"]:
+                iop = self.adt[f"/arm-io/{name}"]
+                nub = self.adt[f"/arm-io/{name}/iop-{name}-nub"]
+                if iop.segment_names.endswith(";__OS_LOG"):
+                    iop.segment_names = iop.segment_names[:-9]
+                    nub.segment_names = nub.segment_names[:-9]
+                    iop.segment_ranges = iop.segment_ranges[:-32]
+                    nub.segment_ranges = nub.segment_ranges[:-32]
 
         print(f"Setting up bootargs at 0x{guest_base + self.bootargs_off:x}...")
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
-import itertools, fnmatch
+import itertools, fnmatch, sys
 from construct import *
+import sys
 
 from .utils import AddrLookup, FourCC, SafeGreedyRange
 
@@ -154,6 +155,30 @@ DCBlockerConfig = Struct(
     "pad" / Hex(Int16ul),
 )
 
+Coef = ExprAdapter(Int32ul,
+                   lambda x, ctx: (x - ((x & 0x1000000) << 1)) / 65536,
+                   lambda x, ctx: int(round(x * 65536)) & 0x1ffffff)
+
+MTRPolynomFuseAGX = GreedyRange(Struct(
+    "id" / Int32ul,
+    "data" / Prefixed(Int32ul, GreedyRange(Coef)),
+))
+
+SpeakerThieleSmall = Struct(
+    "unk0" / Int16ul,
+    "unk1" / Int16ul,
+    "speakers" / GreedyRange(Struct(
+        "pad0" / Hex(Int32ul),
+        "r_mohm" / Int16ul,
+        "temp" / Int16ul,
+        "pad1" / Hex(Int32ul),
+        "pad2" / Hex(Int32ul),
+        "pad3" / Hex(Int16ul),
+        "name" / FourCC,
+    )),
+    "checksum" / Hex(Int16ul),
+)
+
 DEV_PROPERTIES = {
     "pmgr": {
         "*": {
@@ -167,6 +192,7 @@ DEV_PROPERTIES = {
             "device-bridges": PMGRDeviceBridges,
             "voltage-states*": SafeGreedyRange(Int32ul),
             "events": PMGREvents,
+            "mtr-polynom-fuse-agx": MTRPolynomFuseAGX,
         }
     },
     "clpc": {
@@ -200,7 +226,7 @@ DEV_PROPERTIES = {
     },
     "sgx": {
         "*": {
-            "perf-states": SafeGreedyRange(GPUPerfState),
+            "perf-states*": SafeGreedyRange(GPUPerfState),
             "*-kp": Float32l,
             "*-ki": Float32l,
             "*-ki-*": Float32l,
@@ -236,7 +262,12 @@ DEV_PROPERTIES = {
         "*": {
             "audio-stream-formatter": FourCC,
         }
-    }
+    },
+    "audio": {
+        "*": {
+            "speaker-thiele-small": SpeakerThieleSmall,
+        },
+    },
 }
 
 def parse_prop(node, path, node_name, name, v, is_template=False):
@@ -244,6 +275,8 @@ def parse_prop(node, path, node_name, name, v, is_template=False):
 
     if is_template:
         t = CString("ascii")
+        v = Sequence(t, Terminated).parse(v)[0]
+        return t, v
 
     dev_props = None
     for k, pt in DEV_PROPERTIES.items():
@@ -297,12 +330,9 @@ def parse_prop(node, path, node_name, name, v, is_template=False):
                 break
             n = n._parent
         else:
-            ac, sc = node._parent.address_cells, node._parent.size_cells
-            at = Hex(Int64ul) if ac == 2 else Array(ac, Hex(Int32ul))
-            st = Hex(Int64ul) if sc == 2 else Array(sc, Hex(Int32ul))
-            t = SafeGreedyRange(Struct("addr" / at, "size" / st))
-            if len(v) % ((ac + sc) * 4):
-                t = None
+            rs = node._reg_struct
+            if len(v) % rs.sizeof() == 0:
+                t = SafeGreedyRange(rs)
 
     elif name == "ranges":
         try:
@@ -359,7 +389,12 @@ def build_prop(path, name, v, t=None):
     elif isinstance(v, str):
         t = CString("ascii")
     elif isinstance(v, int):
-        t = Int32ul
+        if v > 0xffffffff:
+            t = Int64ul
+        else:
+            t = Int32ul
+    elif isinstance(v, float):
+        t = Float32l
     elif isinstance(v, tuple) and all(isinstance(i, int) for i in v):
         t = Array(len(v), Int32ul)
 
@@ -454,6 +489,20 @@ class ADTNode:
 
         del self._children[item]
 
+    def __contains__(self, item):
+        if isinstance(item, str):
+            while item.startswith("/"):
+                item = item[1:]
+            if "/" in item:
+                a, b = item.split("/", 1)
+                return b in self[a]
+            for c in self._children:
+                if c.name == item:
+                    return True
+            return False
+
+        return item in self._children
+
     def __getattr__(self, attr):
         attr = attr.replace("_", "-")
         attr = attr.replace("--", "_")
@@ -474,6 +523,9 @@ class ADTNode:
             del self.__dict__[attr]
             return
         del self._properties[attr]
+
+    def getprop(self, name, default=None):
+        return self._properties.get(name, default)
 
     @property
     def address_cells(self):
@@ -497,7 +549,7 @@ class ADTNode:
             raise AttributeError("#interrupt-cells")
 
     def _fmt_prop(self, k, v):
-        t, is_template = self._types[k]
+        t, is_template = self._types.get(k, (None, False))
         if is_template:
             return f"<< {v} >>"
         elif isinstance(v, ListContainer):
@@ -538,6 +590,14 @@ class ADTNode:
     def __iter__(self):
         return iter(self._children)
 
+    @property
+    def _reg_struct(self):
+        ac, sc = self._parent.address_cells, self._parent.size_cells
+        return Struct(
+            "addr" / Hex(Int64ul) if ac == 2 else Array(ac, Hex(Int32ul)),
+            "size" / Hex(Int64ul) if sc == 2 else Array(sc, Hex(Int32ul))
+        )
+
     def get_reg(self, idx):
         reg = self.reg[idx]
         addr = reg.addr
@@ -561,6 +621,23 @@ class ADTNode:
                     break
             node = node._parent
 
+        return addr
+
+    def to_bus_addr(self, addr):
+        node = self._parent
+
+        descend = []
+        while node is not None:
+            if "ranges" not in node._properties:
+                break
+            descend.append(node)
+            node = node._parent
+
+        for node in reversed(descend):
+            for r in node.ranges:
+                if r.parent_addr <= addr < (r.parent_addr + r.size):
+                    addr = addr - r.parent_addr + r.bus_addr
+                    break
         return addr
 
     def tostruct(self):
@@ -607,6 +684,19 @@ class ADTNode:
                 lookup.add(range(addr, addr + size), node.name + f"[{index}]")
 
         return lookup
+
+    def create_node(self, name):
+        while name.startswith("/"):
+            name = name[1:]
+        if "/" in name:
+            a, b = name.split("/", 1)
+            return self[a].create_node(b)
+
+        node = ADTNode(path=self._path + "/", parent=self)
+        node.name = name
+        node._types["reg"] = (SafeGreedyRange(node._reg_struct), False)
+        self[name] = node
+        return node
 
 def load_adt(data):
     return ADTNode(ADTNodeStruct.parse(data))

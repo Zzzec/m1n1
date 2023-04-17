@@ -425,6 +425,8 @@ SWAP_SURFACES = 4
 
 Rect = NamedTuple("rect", "x y w h", Int32ul[4])
 
+ActiveRegion = NamedTuple("rect", "max_x max_y min_w max_w", Int32ul[4])
+
 IOMFBSwapRec = Struct(
     "ts1" / Default(Int64ul, 0),
     "ts2" / Default(Int64ul, 0),
@@ -444,12 +446,19 @@ IOMFBSwapRec = Struct(
     "dst_rect" / Rect[SWAP_SURFACES],
     "swap_enabled" / Hex(Int32ul),
     "swap_completed" / Hex(Int32ul),
-    "unk_10c" / Hex(Default(Int32ul, 0)),
-    "unk_110" / UnkBytes(0x1b8),
+    "bg_color" / Hex(Default(Int32ul, 0)),
+    "unk_110" / UnkBytes(0x30),
+    "active_region_enable" / Default(Int32ul[SWAP_SURFACES], [0]*SWAP_SURFACES),
+    "active_regions" / Default(ActiveRegion[SWAP_SURFACES], [(0,0,0,0)] * SWAP_SURFACES),
+    "unk_190" / UnkBytes(0x138),
     "unk_2c8" / Hex(Default(Int32ul, 0)),
     "unk_2cc" / UnkBytes(0x14),
     "unk_2e0" / Hex(Default(Int32ul, 0)),
-    "unk_2e4" / UnkBytes(0x3c),
+    "unk_2e2" / UnkBytes(0x2),
+    "bl_unk" / Hex(Int64ul), # seen: 0x0, 0x1, 0x101, 0x1_0000, 0x101_010101
+    "bl_val" / Hex(Int32ul), # range 0x10000000 - approximately 0x7fe07fc0 for 4 - 510 nits
+    "bl_power" / Hex(Int8ul), # constant 0x40, 0x00: backlight off
+    "unk_2f3" / UnkBytes(0x2d),
 )
 
 assert IOMFBSwapRec.sizeof() == 0x320
@@ -462,6 +471,35 @@ ComponentTypes = Struct(
 )
 
 #ComponentTypes = Bytes(8)
+
+CLA_Chroma = 0
+CLA_Luma = 1
+CLA_Alpha = 2
+
+ARGB_RedLuma = 0
+ARGB_GreenCb = 1
+ARGB_BlueCr = 2
+ARGB_Alpha = 3
+
+kIOSurfaceAddressFormatLinear = 0
+kIOSurfaceAddressFormatIndirect = 1
+kIOSurfaceAddressFormatTwiddled = 2
+kIOSurfaceAddressFormatTiled = 3
+kIOSurfaceAddressFormatReference = 4
+
+kIOSurfaceCompressionTypeNone = 0
+kIOSurfaceCompressionTypeHTPC = 1
+kIOSurfaceCompressionTypeAGX = 2
+kIOSurfaceCompressionTypeInterchange = 3
+kIOSurfaceCompressionTypeInterchangeLossy = 4
+
+kInterchangeSizeNone = 0
+kInterchangeSizeLarge = 1
+kInterchangeSizeNormal = 2
+
+kInterchangeLinear = 0
+kInterchangeCompressed = 1
+kInterchangeUncompressed = 2
 
 PlaneInfo = Struct(
     "width" / Int32ul,
@@ -479,6 +517,25 @@ PlaneInfo = Struct(
 )
 
 assert PlaneInfo.sizeof() == 0x50
+
+CompressionInfo = Struct(
+    "tile_w" / Int32ul,
+    "tile_h" / Int32ul,
+    "meta_offset" / Int32ul,
+    "data_offset" / Int32ul,
+    "tile_meta_bytes" / Int32ul,
+    "tiles_w" / Int32ul,
+    "tiles_h" / Int32ul,
+    "unk1" / Default(Int32ul, 0),
+    "compression_type" / Default(Int32ul, 3),
+    "unk3" / Default(Int32ul, 0),
+    "pad" / Padding(3),
+    "tile_bytes" / Int32ul,
+    "row_stride" / Int32ul,
+    "pad2" / Padding(1),
+)
+
+assert PlaneInfo.sizeof() == 0x34
 
 IOSurface = Struct(
     "is_tiled" / bool_,
@@ -505,7 +562,7 @@ IOSurface = Struct(
     "has_comp" / Bool(Int64ul),
     "planes" / Default(SizedArray(MAX_PLANES, "plane_cnt", PlaneInfo), []),
     "has_planes" / Bool(Int64ul),
-    "compression_info" / Default(SizedArray(MAX_PLANES, "plane_cnt", UnkBytes(0x34)), []),
+    "compression_info" / Default(SizedArray(MAX_PLANES, "plane_cnt", CompressionInfo), []),
     "has_compr_info" / Bool(Int64ul),
     "unk_1f5" / Int32ul,
     "unk_1f9" / Int32ul,
